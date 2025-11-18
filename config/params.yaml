@@ -1,0 +1,66 @@
+map:
+  size: [180, 300]          # [rows(Y), cols(X)]
+  safe_dist: 1.0
+  obstacles:                # [cx, cy, r]
+    - [70, 60, 20]
+    - [110, 130, 20]
+    - [190, 60, 20]
+    - [230, 130, 20]
+
+mission:
+  start:    [15, 40]
+  waypoint: [130, 130]
+  goal:     [270, 60]
+
+rrt:
+  max_iter: 5000
+  step: 4.0
+  goal_tol: 3.0
+  seed: 42
+
+smooth:
+  n_per_seg: 40
+  eps_rdp: 1.0
+
+ctrl:
+  dt: 0.05
+  v_ref_nom: 1.0
+  Ku: 80
+  Kr: 60
+  Kv: 40
+  Kdv: 10
+  Ymax: 60
+  Tmax: 180
+  Nmax: 150
+  r_max_cmd: 0.65
+  e_align_deg: 25
+  Kpsi_align: 0.85
+
+avoid:
+  buffer: 1.6
+  yaw_gain: 0.35
+  slowdown_min: 0.25
+
+ilos1:  {Delta_h: 3.5, kappa: 0.10, R_switch: 0.8}
+ilos2:  {Delta_h: 5.0, kappa: 0.05, R_switch: 0.5}
+
+segment1:
+  lookahead: 6.0
+  switch_r_xy: 15.0
+  capture_dist: 5.0
+  capture_speed: 0.35
+  capture_align_deg: 14
+  hold_steps: 40
+
+segment2:
+  align_steps: 40
+  Ld_min: 3.5
+  Ld_max: 7.0
+  Kpsi_extra: 0.15
+  capture_dist: 2.0
+  capture_speed: 0.25
+  capture_align_deg: 10
+  hold_steps: 25
+  slow_start_dist: 18
+  v_ref_min: 0.12
+  guard_delay_steps: 40

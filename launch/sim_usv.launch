@@ -1,0 +1,10 @@
+<launch>
+  <param name="use_sim_time" value="false"/>
+  <rosparam command="load" file="$(find my_usv_pkg)/config/params.yaml"/>
+
+  <node pkg="my_usv_pkg" type="planner_node.py"    name="planner"    output="screen"/>
+  <node pkg="my_usv_pkg" type="controller_sim_node.py" name="controller" output="screen"/>
+
+  <!-- opsional -->
+  <!-- <node pkg="rviz" type="rviz" name="rviz" args="-d $(find my_usv_pkg)/rviz/usv.rviz"/> -->
+</launch>
