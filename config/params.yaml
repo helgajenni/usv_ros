@@ -1,66 +1,74 @@
+# config/params.yaml
 map:
-  size: [180, 300]          # [rows(Y), cols(X)]
-  safe_dist: 1.0
-  obstacles:                # [cx, cy, r]
-    - [70, 60, 20]
-    - [110, 130, 20]
-    - [190, 60, 20]
-    - [230, 130, 20]
+  size: [33.0, 50.0]
+  obstacles:
+    - [10.0, 10.0, 0.25]
+    - [20.0, 20.0, 0.25]
+    - [30.0, 10.0, 0.25]
+    - [40.0, 20.0, 0.25]
+    - [17.0, 16.5, 0.25]
+    - [41.0, 16.0, 0.25]
 
 mission:
-  start:    [15, 40]
-  waypoint: [130, 130]
-  goal:     [270, 60]
+  start: [1.0, 8.0]
+  waypoint: [25.0, 20.0]
+  goal: [48.0, 13.0]
 
-rrt:
-  max_iter: 5000
-  step: 4.0
-  goal_tol: 3.0
-  seed: 42
+safety_margin: 2.0
+display_margin: 0.5
 
-smooth:
-  n_per_seg: 40
-  eps_rdp: 1.0
+usv:
+  L: 1.6
+  B: 0.4
+  m: 11.8
+  g: 9.81
+  
+  # Parameter Identifikasi A1-A27 (Model Taylor Patched)
+  A1: 1.0059
+  A2: -0.0087   # Koreksi redaman negatif
+  A3: -0.2041
+  A4: -0.1302
+  A5: -0.8849
+  A6: 2.9728
+  A7: -0.3969
+  A8: 3.4876
+  A9: 6.8460
+  A10: 0.0000
+  A11: 0.0000
+  A12: -0.3062
+  A13: 0.5764
+  A14: -0.9204
+  A15: 0.0000
+  A16: 0.2530
+  A17: 0.0003
+  A18: 0.0007
+  A19: 0.0500   # Koreksi kemudi (Fy) agar kapal bisa berbelok
+  A20: 0.0000
+  A21: 0.0000
+  A22: 0.0000
+  A23: 1.4384
+  A24: 0.0066
+  A25: 0.0291
+  A26: -0.0001
+  A27: 0.0000
+
+  # Limit Aktuator
+  lims:
+    TX: 2500.0
+    TY: 60.0
+    TN: 35.0
+    TK: 60.0
+    dTX: 200.0
+    dTN: 150.0
+    dTK: 200.0
 
 ctrl:
   dt: 0.05
-  v_ref_nom: 1.0
-  Ku: 80
-  Kr: 60
-  Kv: 40
-  Kdv: 10
-  Ymax: 60
-  Tmax: 180
-  Nmax: 150
-  r_max_cmd: 0.65
-  e_align_deg: 25
-  Kpsi_align: 0.85
-
-avoid:
-  buffer: 1.6
-  yaw_gain: 0.35
-  slowdown_min: 0.25
-
-ilos1:  {Delta_h: 3.5, kappa: 0.10, R_switch: 0.8}
-ilos2:  {Delta_h: 5.0, kappa: 0.05, R_switch: 0.5}
-
-segment1:
-  lookahead: 6.0
-  switch_r_xy: 15.0
-  capture_dist: 5.0
-  capture_speed: 0.35
-  capture_align_deg: 14
-  hold_steps: 40
-
-segment2:
-  align_steps: 40
-  Ld_min: 3.5
-  Ld_max: 7.0
-  Kpsi_extra: 0.15
-  capture_dist: 2.0
-  capture_speed: 0.25
-  capture_align_deg: 10
-  hold_steps: 25
-  slow_start_dist: 18
-  v_ref_min: 0.12
-  guard_delay_steps: 40
+  ILOS_Delta: 2.5
+  ILOS_gamma: 0.5
+  ILOS_kappa: 0.25
+  Kp: 0.8
+  Kd: 0.7
+  WP_RADIUS: 1.5
+  WP_PAUSE: 3.5
+  GOAL_TOL: 1.0

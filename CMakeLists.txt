@@ -16,7 +16,9 @@ include_directories(${catkin_INCLUDE_DIRS})
 
 # install python nodes from scripts/ so rosrun/roslaunch bisa eksekusi
 install(PROGRAMS
-  scripts/planner_node.py
-  scripts/controller_sim_node.py
+  scripts/path_planning.py
+  scripts/controller.py
+  scripts/usv_dynamics.py
+  scripts/rviz_visualizer.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
