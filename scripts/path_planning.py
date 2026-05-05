@@ -6,7 +6,7 @@ import random
 import csv
 import os
 import matplotlib.pyplot as plt
-from scipy.interpolate import CubicSpline
+from scipy.interpolate import splprep, splev
 
 from geometry_msgs.msg import Pose2D, PoseStamped
 from nav_msgs.msg import Path
@@ -24,11 +24,10 @@ def is_collision_free(p1, p2, obs, margin):
                 return False
     return True
 
-# --- PERBAIKAN FATAL: Logika RRT* dengan Rewiring (Persis seperti MATLAB) ---
 def rrt_star(start_pt, goal_pt, obs, map_sz, rrt_p, margin):
     nodes = [np.array(start_pt)]
     parents = [0]
-    costs = [0.0] # Array untuk menyimpan biaya lintasan
+    costs = [0.0] 
 
     for i in range(rrt_p['maxIter']):
         if random.random() < rrt_p['goalBias']: 
@@ -52,14 +51,12 @@ def rrt_star(start_pt, goal_pt, obs, map_sz, rrt_p, margin):
         if not is_collision_free(nearest_node, new_pt, obs, margin): 
             continue
 
-        # 1. Cari node tetangga (Near Nodes) berdasarkan radius
         dists_to_new = np.linalg.norm(np.array(nodes) - new_pt, axis=1)
         near_indices = np.where(dists_to_new <= rrt_p['rewireRad'])[0]
 
         best_parent = n_idx
         best_cost = costs[n_idx] + np.linalg.norm(new_pt - nodes[n_idx])
 
-        # 2. Choose Best Parent (Pilih jalur terpendek dari tetangga)
         for ni in near_indices:
             c = costs[ni] + np.linalg.norm(new_pt - nodes[ni])
             if c < best_cost and is_collision_free(nodes[ni], new_pt, obs, margin):
@@ -71,7 +68,6 @@ def rrt_star(start_pt, goal_pt, obs, map_sz, rrt_p, margin):
         costs.append(best_cost)
         new_node_idx = len(nodes) - 1
 
-        # 3. Rewire (Luruskan jalur dengan menyambung ulang tetangga)
         for ni in near_indices:
             nc = costs[new_node_idx] + np.linalg.norm(nodes[ni] - new_pt)
             if nc < costs[ni] and is_collision_free(new_pt, nodes[ni], obs, margin):
@@ -93,58 +89,62 @@ def rrt_star(start_pt, goal_pt, obs, map_sz, rrt_p, margin):
     path.reverse()
     return np.array(path)
 
-# Pure G2CBS C^2 Continuous
-def smooth_path_g2cbs_scipy(raw_path, samples_per_seg=40):
-    diffs = np.diff(raw_path, axis=0)
-    dists = np.linalg.norm(diffs, axis=1)
-    t = np.concatenate(([0], np.cumsum(dists)))
-    _, idx = np.unique(t, return_index=True)
-    t = t[np.sort(idx)]
-    raw_path = raw_path[np.sort(idx)]
+# PERBAIKAN: Konfigurasi G2CBS C^2 Continuous Ekuivalen MATLAB
+def smooth_path_g2cbs_scipy(raw_path):
+    # 1. FILTERING (Rahasia MATLAB): Saring titik RRT* yang terlalu rapat
+    # Kita hanya mengambil titik yang berjarak minimal 2.5 meter agar 
+    # tersedia "ruang" untuk membuat lengkungan (corner) yang sangat landai.
+    filtered_path = [raw_path[0]]
+    for pt in raw_path:
+        if np.linalg.norm(pt - filtered_path[-1]) >= 2.5:
+            filtered_path.append(pt)
+            
+    # Pastikan Goal (titik akhir) tidak terbuang
+    if np.linalg.norm(raw_path[-1] - filtered_path[-1]) > 0.1:
+        filtered_path.append(raw_path[-1])
+        
+    clean = np.array(filtered_path)
     
-    cs_x = CubicSpline(t, raw_path[:, 0], bc_type='natural')
-    cs_y = CubicSpline(t, raw_path[:, 1], bc_type='natural')
+    # Keamanan jika jalurnya ternyata terlalu pendek
+    if len(clean) < 4:
+        return raw_path 
+
+    # 2. KONFIGURASI G2CBS Python
+    # k=3 : Menjamin sifat C^2 Continuous (turunan kedua mulus)
+    # s=2.0 : Smoothing factor, memaksa kurva membulat mengabaikan zig-zag kecil
+    tck, u = splprep([clean[:, 0], clean[:, 1]], s=2.0, k=3)
     
-    t_smooth = np.linspace(0, t[-1], len(raw_path) * samples_per_seg)
-    smooth_path = np.vstack((cs_x(t_smooth), cs_y(t_smooth))).T
-    return smooth_path
+    # 3. Render 800 titik baru agar lintasan terlihat SANGAT licin seperti jalan tol
+    u_new = np.linspace(0, 1, 800)
+    x_new, y_new = splev(u_new, tck)
+    
+    return np.vstack((x_new, y_new)).T
 
 def save_and_plot_results(log_data):
     filename = os.path.expanduser("~/catkin_ws/usv_simulation_results.csv")
     with open(filename, mode='w', newline='') as file:
         writer = csv.writer(file)
         writer.writerow(['Time', 'Psi_deg', 'Psi_err_deg', 'CTE_m', 'Surge_u', 'Sway_v', 'Yaw_Rate_r_deg', 'Yaw_Torque_TN', 'Roll_phi_deg', 'Roll_Rate_p_deg'])
-        for row in log_data:
-            writer.writerow(row)
+        for row in log_data: writer.writerow(row)
 
-    t = [row[0] for row in log_data]
-    psi = [row[1] for row in log_data]
-    psi_err = [row[2] for row in log_data]
-    cte = [row[3] for row in log_data]
-    u = [row[4] for row in log_data]
-    v = [row[5] for row in log_data]
-    r = [row[6] for row in log_data]
-    tn = [row[7] for row in log_data]
-    phi = [row[8] for row in log_data]
-    p = [row[9] for row in log_data]
+    t = [row[0] for row in log_data]; psi = [row[1] for row in log_data]
+    psi_err = [row[2] for row in log_data]; cte = [row[3] for row in log_data]
+    u = [row[4] for row in log_data]; v = [row[5] for row in log_data]
+    r = [row[6] for row in log_data]; tn = [row[7] for row in log_data]
+    phi = [row[8] for row in log_data]; p = [row[9] for row in log_data]
 
     fig, axs = plt.subplots(3, 3, figsize=(15, 10))
     fig.canvas.manager.set_window_title('USV States Performance')
-
-    axs[0,0].plot(t, psi, 'b-', label='Actual'); axs[0,0].set_title('Heading \u03c8 [deg]')
+    axs[0,0].plot(t, psi, 'b-'); axs[0,0].set_title('Heading \u03c8 [deg]')
     axs[0,1].plot(t, psi_err, 'g-'); axs[0,1].set_title('Heading Error [deg]')
     axs[0,2].plot(t, cte, 'm-'); axs[0,2].set_title('Cross-Track Error [m]')
     axs[1,0].plot(t, u, 'b-'); axs[1,0].set_title('Surge u [m/s]'); axs[1,0].axhline(y=1.5, color='r', linestyle='--')
     axs[1,1].plot(t, v, 'c-'); axs[1,1].set_title('Sway v [m/s]')
     axs[1,2].plot(t, r, 'g-'); axs[1,2].set_title('Yaw Rate r [deg/s]')
-    axs[2,0].plot(t, tn, 'purple'); axs[2,0].set_title('Yaw Torque TN [Nm]'); axs[2,0].axhline(y=35, color='r', linestyle='--'); axs[2,0].axhline(y=-35, color='r', linestyle='--')
+    axs[2,0].plot(t, tn, 'purple'); axs[2,0].set_title('Yaw Torque TN [Nm]')
     axs[2,1].plot(t, phi, 'b-'); axs[2,1].set_title('Roll \u03d5 [deg]')
     axs[2,2].plot(t, p, 'c-'); axs[2,2].set_title('Roll Rate p [deg/s]')
-
-    for ax in axs.flat:
-        ax.grid(True)
-        ax.set_xlabel('t [s]')
-
+    for ax in axs.flat: ax.grid(True); ax.set_xlabel('t [s]')
     plt.tight_layout()
     plt.show()
 
@@ -154,6 +154,9 @@ def main_ros_loop():
     pub_path = rospy.Publisher('/usv/planned_path', Path, queue_size=1, latch=True)
     pub_raw = rospy.Publisher('/usv/raw_path', Path, queue_size=1, latch=True) 
     
+    random.seed(10)
+    np.random.seed(10)
+    
     start = rospy.get_param('/mission/start', [1.0, 8.0])
     waypoint = rospy.get_param('/mission/waypoint', [25.0, 20.0])
     goal = rospy.get_param('/mission/goal', [48.0, 13.0])
@@ -161,35 +164,31 @@ def main_ros_loop():
     obs = rospy.get_param('/map/obstacles', [])
     margin = rospy.get_param('/safety_margin', 2.0)
     
-    # Parameter RRT* ditambahkan rewireRad = 3.0 sesuai MATLAB-mu
-    rrt_p = {'maxIter': 800, 'stepSize': 1.0, 'goalBias': 0.15, 'goalTol': 1.0, 'rewireRad': 3.0}
-    
+    rrt_p = {'maxIter': 1000, 'stepSize': 1.0, 'goalBias': 0.15, 'goalTol': 1.0, 'rewireRad': 4.0}
     path1 = rrt_star(start, waypoint, obs, map_size, rrt_p, margin)
     path2 = rrt_star(waypoint, goal, obs, map_size, rrt_p, margin)
-    raw_path_all = np.vstack((path1, path2[1:]))
     
+    raw_path_all = np.vstack((path1, path2[1:]))
     full_path = smooth_path_g2cbs_scipy(raw_path_all)
     
     path_msg = Path()
     path_msg.header.frame_id = "map"
     for pt in full_path:
-        ps = PoseStamped()
-        ps.pose.position.x = pt[0]; ps.pose.position.y = pt[1]
+        ps = PoseStamped(); ps.pose.position.x = pt[0]; ps.pose.position.y = pt[1]
         path_msg.poses.append(ps)
     pub_path.publish(path_msg)
 
     raw_msg = Path()
     raw_msg.header.frame_id = "map"
     for pt in raw_path_all:
-        ps = PoseStamped()
-        ps.pose.position.x = pt[0]; ps.pose.position.y = pt[1]
+        ps = PoseStamped(); ps.pose.position.x = pt[0]; ps.pose.position.y = pt[1]
         raw_msg.poses.append(ps)
     pub_raw.publish(raw_msg)
     
     dynamics = USVDynamics()
     
-    dx_init = full_path[min(12, len(full_path)-1)][0] - full_path[0][0]
-    dy_init = full_path[min(12, len(full_path)-1)][1] - full_path[0][1]
+    dx_init = full_path[min(20, len(full_path)-1)][0] - full_path[0][0]
+    dy_init = full_path[min(20, len(full_path)-1)][1] - full_path[0][1]
     dynamics.state[2] = math.atan2(dy_init, dx_init)
     
     controller = USVController()
@@ -213,7 +212,8 @@ def main_ros_loop():
             save_and_plot_results(log_data)
             break
             
-        search_range = range(wp_idx, min(wp_idx + 18, n_wp))
+        # PERBAIKAN: Index hanya maju perlahan (maksimal 10) agar TIDAK MELOMPAT tikungan
+        search_range = range(wp_idx, min(wp_idx + 10, n_wp))
         dists = [math.hypot(full_path[i][0] - x, full_path[i][1] - y) for i in search_range]
         if dists:
             local_idx = np.argmin(dists)
@@ -221,13 +221,21 @@ def main_ros_loop():
             if new_idx >= wp_idx:
                 wp_idx = new_idx
                 
-        idx_prev = wp_idx
-        idx_next = min(wp_idx + 8, n_wp - 1)
+        # Lookahead yang ketat untuk menempel pada jalur
+        lookahead_dist = 1.5
+        idx_next = wp_idx
+        for i in range(wp_idx, n_wp):
+            if math.hypot(full_path[i][0] - full_path[wp_idx][0], full_path[i][1] - full_path[wp_idx][1]) >= lookahead_dist:
+                idx_next = i
+                break
         
-        wp_prev = full_path[idx_prev]
+        if idx_next == wp_idx:
+            idx_next = min(wp_idx + 5, n_wp - 1)
+        
+        wp_prev = full_path[wp_idx]
         wp_next = full_path[idx_next]
         
-        if wp_idx >= n_wp - 5 or dist_goal < 6.0:
+        if wp_idx >= n_wp - 10 or dist_goal < 6.0:
             wp_next = goal
             
         Tcmd, cte, psi_e, psi_d = controller.compute_control(state, wp_prev, wp_next, dt, t, dist_goal)

@@ -5,19 +5,20 @@ import math
 
 class USVController:
     def __init__(self):
-        self.delta = 2.5
+        self.delta = 2.0
         self.gamma = 0.5
-        self.kappa = 0.02
+        self.kappa = 0.05
         self.beta_hat = 0.0
         self.psi_d_filtered = 0.0
         
-        self.Ku   = {'p': 800.0, 'i': 10.0, 'd': 150.0}
-        self.Kpsi = {'p': 45.0,  'i': 1.5,  'd': 20.0}
-        self.Kphi = {'p': 5.0,   'i': 0.1,  'd': 2.0}
+        # Gain dikuatkan agar kapal merespons rute dengan agresif
+        self.Ku   = {'p': 100.0, 'i': 5.0, 'd': 20.0}   
+        self.Kpsi = {'p': 60.0,  'i': 2.0,  'd': 25.0} 
+        self.Kphi = {'p': 10.0,  'i': 0.2,  'd': 12.0}  
         
         self.eInt_u, self.eInt_psi, self.eInt_phi = 0.0, 0.0, 0.0
-        self.intMax = {'u': 25.0, 'psi': 8.0, 'phi': 3.0}
-        self.psi_e_prev = 0.0 # Memori Anti-windup
+        self.intMax = {'u': 50.0, 'psi': 8.0, 'phi': 5.0}
+        self.psi_e_prev = 0.0 
         
         self.U0_saved = 1.5
         self.filt_r, self.filt_p = 0.0, 0.0
@@ -27,8 +28,8 @@ class USVController:
         self.phi_max = math.radians(4.0)
         self.g = 9.81
 
-        self.lims = {'TX': 40.0, 'TY': 60.0, 'TN': 35.0, 'TK': 60.0, 
-                     'dTX': 200.0, 'dTN': 150.0, 'dTK': 200.0}
+        self.lims = {'TX': 2500.0, 'TY': 60.0, 'TN': 1500.0, 'TK': 60.0,
+                     'dTX': 5000.0, 'dTN': 800.0, 'dTK': 200.0}
         
         self.TX_prev, self.TN_prev, self.TK_prev = 0.0, 0.0, 0.0
 
@@ -56,18 +57,19 @@ class USVController:
         self.beta_hat = np.clip(self.beta_hat, -0.8, 0.8)
         
         psi_d_raw = self.wrap_to_pi(alpha - math.atan2(ye_clamped + self.gamma * self.beta_hat, self.delta))
-        self.psi_d_filtered += 1.0 * self.wrap_to_pi(psi_d_raw - self.psi_d_filtered)
+        self.psi_d_filtered += 0.9 * self.wrap_to_pi(psi_d_raw - self.psi_d_filtered)
         psi_d = self.wrap_to_pi(self.psi_d_filtered)
         
         psi_e = self.wrap_to_pi(psi_d - psi)
-        fade_in = min(1.0, t / 4.0)
+        fade_in = min(1.0, t / 1.5)
         
         if dist_goal < 1.5:
             target_U0 = max(0.6, 1.5 * (dist_goal / 1.5))
         else:
-            target_U0 = 1.5
+            turn_factor = max(0.4, 1.0 - 0.6 * min(abs(psi_e), math.pi/2) / (math.pi/2))
+            target_U0 = 1.5 * turn_factor
             
-        self.U0_saved += 0.15 * (target_U0 - self.U0_saved)
+        self.U0_saved += 0.2 * (target_U0 - self.U0_saved)
         e_u = self.U0_saved - u
         
         U_eff = max(0.3, math.hypot(u, v))
@@ -81,7 +83,6 @@ class USVController:
         self.phi_des_prev = phi_des
         e_phi = phi_des - phi
         
-        # --- PERBAIKAN: Anti-windup Integrator Reset ---
         if t > 0 and (psi_e * self.psi_e_prev < 0):
             self.eInt_psi *= 0.5
         self.psi_e_prev = psi_e
@@ -93,7 +94,9 @@ class USVController:
         self.filt_r += 0.3 * (r - self.filt_r)
         self.filt_p += 0.3 * (p - self.filt_p)
         
-        TX = self.Ku['p']*e_u     + self.Ku['i']*self.eInt_u   - self.Ku['d']*u
+        u_ref = self.U0_saved
+        TX_ff = (0.0087*u_ref + 0.2041*abs(u_ref)*u_ref + 0.1302*(u_ref**2)*u_ref) / 0.0007
+        TX = TX_ff + self.Ku['p']*e_u + self.Ku['i']*self.eInt_u - self.Ku['d']*u
         TN = self.Kpsi['p']*psi_e + self.Kpsi['i']*self.eInt_psi - self.Kpsi['d']*self.filt_r
         TK = self.Kphi['p']*e_phi + self.Kphi['i']*self.eInt_phi - self.Kphi['d']*self.filt_p
         TY = 0.0

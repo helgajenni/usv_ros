@@ -26,6 +26,9 @@ class USVDynamics:
             
         # State awal kapal (diambil dari parameter start: [1.0, 8.0])
         start_pt = rospy.get_param('/mission/start', [1.0, 8.0])
+        # Gain aktuasi roll (TK -> dp): merepresentasikan kontrol stabilisasi roll
+        self.k_TK = 0.15
+
         self.state = np.array([start_pt[0], start_pt[1], 0.0, 0.0, 1.5, 0.0, 0.0, 0.0])
 
     def taylor_4dof(self, V, T, psi, phi):
@@ -38,13 +41,13 @@ class USVDynamics:
         p = np.clip(p, -5, 5)
         phi = np.clip(phi, -math.radians(30), math.radians(30))
         
-        Fx, Fy = T[0], T[2] # TX (Surge), TN (Yaw)
+        Fx, Fy, Fk = T[0], T[2], T[3] # TX (Surge), TN (Yaw), TK (Roll)
         A = self.A
         
         # Dinamika Taylor 4-DOF
         du = A['A1']*v*r + A['A2']*u + A['A3']*abs(u)*u + A['A4']*(abs(u)**2)*u + A['A18']*Fx
         dv = -(1/A['A1'])*u*r + A['A5']*v + A['A6']*abs(v)*v + A['A7']*(abs(v)**2)*v + A['A8']*abs(r)*v + A['A9']*abs(v)*r
-        dp = A['A20']*p + A['A21']*abs(p)*p + A['A22']*(abs(p)**2)*p - A['A23']*phi + A['A24']*u*r + A['A25']*v + A['A26']*Fy
+        dp = A['A20']*p + A['A21']*abs(p)*p + A['A22']*(abs(p)**2)*p - A['A23']*phi + A['A24']*u*r + A['A25']*v + A['A26']*Fy + self.k_TK*Fk
         dr = -A['A10']*v*u + A['A11']*u*v + A['A12']*r + A['A13']*abs(r)*r + A['A14']*(abs(r)**2)*r + A['A15']*abs(r)*u + A['A16']*abs(u)*r + A['A17']*abs(u)*u + A['A19']*Fy
         
         # Anti-windup / Acceleration bounding
