@@ -3,9 +3,10 @@ Panels:
     Help Height: 70
     Name: Displays
     Property Tree Widget:
-      Expanded: ~
+      Expanded:
+        - /Path1
       Splitter Ratio: 0.5
-    Tree Height: 397
+    Tree Height: 298
   - Class: rviz/Views
     Expanded:
       - /Current View1
@@ -65,8 +66,10 @@ Visualization Manager:
       Marker Topic: /usv/static_markers
       Name: Static Environment
       Namespaces:
+        map_boundary: true
         mission_labels: true
         mission_points: true
+        obstacle_display: true
         obstacle_labels: true
         obstacle_safety: true
         obstacles: true
@@ -111,6 +114,38 @@ Visualization Manager:
             {}
       Update Interval: 0
       Value: true
+    - Class: rviz/MarkerArray
+      Enabled: true
+      Marker Topic: visualization_marker_array
+      Name: MarkerArray
+      Namespaces:
+        {}
+      Queue Size: 100
+      Value: true
+    - Alpha: 1
+      Buffer Length: 1
+      Class: rviz/Path
+      Color: 25; 255; 0
+      Enabled: true
+      Head Diameter: 0.30000001192092896
+      Head Length: 0.20000000298023224
+      Length: 0.30000001192092896
+      Line Style: Lines
+      Line Width: 0.029999999329447746
+      Name: Path
+      Offset:
+        X: 0
+        Y: 0
+        Z: 0
+      Pose Color: 255; 85; 255
+      Pose Style: None
+      Queue Size: 10
+      Radius: 0.029999999329447746
+      Shaft Diameter: 0.10000000149011612
+      Shaft Length: 0.10000000149011612
+      Topic: /usv/raw_path
+      Unreliable: false
+      Value: true
   Enabled: true
   Global Options:
     Background Color: 48; 48; 48
@@ -140,12 +175,12 @@ Visualization Manager:
 Window Geometry:
   Displays:
     collapsed: false
-  Height: 987
+  Height: 819
   Hide Left Dock: false
   Hide Right Dock: false
-  QMainWindow State: 000000ff00000000fd00000001000000000000015600000385fc0200000002fb000000100044006900730070006c006100790073010000003b0000020e000000c700fffffffb0000000a00560069006500770073010000024f00000171000000a000ffffff000006180000038500000004000000040000000800000008fc0000000100000002000000010000000a0054006f006f006c00730100000000ffffffff0000000000000000
+  QMainWindow State: 000000ff00000000fd000000010000000000000156000002ddfc0200000002fb000000100044006900730070006c006100790073010000003b000001ab000000c700fffffffb0000000a0056006900650077007301000001ec0000012c000000a000ffffff00000438000002dd00000004000000040000000800000008fc0000000100000002000000010000000a0054006f006f006c00730100000000ffffffff0000000000000000
   Views:
     collapsed: false
-  Width: 1908
+  Width: 1428
   X: 0
   Y: 0

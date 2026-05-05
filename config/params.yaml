@@ -1,6 +1,9 @@
 # config/params.yaml
+# Semua parameter disinkronkan dengan MATLAB reference implementation
+# ================================================================
+
 map:
-  size: [33.0, 50.0]
+  size: [33.0, 50.0]   # [yMax, xMax] dalam meter
   obstacles:
     - [10.0, 10.0, 0.25]
     - [20.0, 20.0, 0.25]
@@ -10,65 +13,103 @@ map:
     - [41.0, 16.0, 0.25]
 
 mission:
-  start: [1.0, 8.0]
+  start:    [1.0,  8.0]
   waypoint: [25.0, 20.0]
-  goal: [48.0, 13.0]
+  goal:     [48.0, 13.0]
 
-safety_margin: 2.0
+safety_margin:  2.0
 display_margin: 0.5
 
+# ── USV Physical Model (Taylor 4-DOF A1-A27) ─────────────────────
 usv:
   L: 1.6
   B: 0.4
   m: 11.8
   g: 9.81
-  
-  # Parameter Identifikasi A1-A27 (Model Taylor Patched)
-  A1: 1.0059
-  A2: -0.0087   # Koreksi redaman negatif
+
+  # Parameter Identifikasi A1-A27 (Model Taylor Patched, sesuai MATLAB)
+  A1:  1.0059
+  A2: -0.0087    # Redaman surge (negatif = hambatan)
   A3: -0.2041
   A4: -0.1302
   A5: -0.8849
-  A6: 2.9728
+  A6:  2.9728
   A7: -0.3969
-  A8: 3.4876
-  A9: 6.8460
+  A8:  3.4876
+  A9:  6.8460
   A10: 0.0000
   A11: 0.0000
   A12: -0.3062
-  A13: 0.5764
+  A13:  0.5764
   A14: -0.9204
-  A15: 0.0000
-  A16: 0.2530
-  A17: 0.0003
-  A18: 0.0007
-  A19: 0.0500   # Koreksi kemudi (Fy) agar kapal bisa berbelok
-  A20: 0.0000
-  A21: 0.0000
-  A22: 0.0000
-  A23: 1.4384
-  A24: 0.0066
-  A25: 0.0291
+  A15:  0.0000
+  A16:  0.2530
+  A17:  0.0003
+  A18:  0.0007
+  A19:  0.0500   # Koefisien kemudi yaw (dr/dFy) — patch agar kapal bisa berbelok
+  A20:  0.0000
+  A21:  0.0000
+  A22:  0.0000
+  A23:  1.4384
+  A24:  0.0066
+  A25:  0.0291
   A26: -0.0001
-  A27: 0.0000
+  A27:  0.0000
 
-  # Limit Aktuator
+  # Limit Aktuator (TX menggunakan feedforward, bukan limit MATLAB 40)
   lims:
-    TX: 2500.0
-    TY: 60.0
-    TN: 35.0
-    TK: 60.0
-    dTX: 200.0
+    TX:  2500.0   # Headroom untuk TX_ff (feedforward surge agar u=1.5 m/s tercapai)
+    TY:  60.0
+    TN:  35.0     # sesuai MATLAB lims.TN = 35 Nm
+    TK:  60.0
+    dTX: 200.0    # Rate limiter [unit/s]
     dTN: 150.0
     dTK: 200.0
 
+# ── RRT* Path Planning ────────────────────────────────────────────
+rrt:
+  maxIter:  800
+  stepSize: 1.0
+  goalBias: 0.15
+  goalTol:  1.0
+  rewireRad: 3.0
+
+# ── Controller (ILOS + PID 4-DOF) ────────────────────────────────
 ctrl:
   dt: 0.05
-  ILOS_Delta: 2.5
+
+  # ILOS Guidance
+  ILOS_Delta: 4.0     # 2.5→4.0: lookahead lebih jauh → heading lebih smooth di tikungan
   ILOS_gamma: 0.5
-  ILOS_kappa: 0.25
-  Kp: 0.8
-  Kd: 0.7
-  WP_RADIUS: 1.5
-  WP_PAUSE: 3.5
-  GOAL_TOL: 1.0
+  ILOS_kappa: 0.01    # 0.02→0.01: kurangi akumulasi beta_hat di tikungan panjang
+
+  # Surge PID (sesuai MATLAB gains.Ku)
+  Ku_p:  800.0
+  Ku_i:  10.0
+  Ku_d:  150.0
+
+  # Yaw PID (sesuai MATLAB gains.Kpsi)
+  Kpsi_p: 45.0
+  Kpsi_i:  1.5
+  Kpsi_d: 20.0
+
+  # Roll PID (sesuai MATLAB gains.Kphi)
+  Kphi_p: 5.0
+  Kphi_i: 0.1
+  Kphi_d: 2.0
+
+  # Integrator limits (sesuai MATLAB intMax)
+  intMax_u:   25.0
+  intMax_psi:  8.0
+  intMax_phi:  3.0
+
+  # Misi
+  WP_RADIUS:  4.0    # 2.0→4.0: terminal phase aktif lebih awal, tangkap kapal walau radius besar
+  GOAL_TOL:   1.5    # 0.5→1.5: stop lebih awal sebelum overshoot goal
+  fade_in:    4.0    # MATLAB: 4.0 detik ramp (bukan 1.5 yang lama)
+
+  # Speed control (sesuai MATLAB)
+  U0_target:      1.5
+  U0_curv_thresh: 0.05   # 0.12→0.05: deteksi tikungan lebih sensitif
+  U0_curv_speed:  0.6    # 1.25→0.6: jauh lebih lambat saat menikung, kurangi overshoot
+  alpha_u:        0.15   # low-pass filter kecepatan
