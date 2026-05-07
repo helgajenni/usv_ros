@@ -101,6 +101,92 @@ def smooth_path_g2cbs_c2(raw_path, n_per_seg=40):
     keep2  = np.r_[True, np.linalg.norm(np.diff(result, axis=0), axis=1) > 1e-8]
     return result[keep2]
 
+def downsample_path(path, min_dist=3.0):
+    """
+    Menghapus titik-titik yang terlalu berdekatan.
+    min_dist=3.0 meter memaksa titik kontrol minimal berjarak 3 meter,
+    sehingga memberikan ruang bagi G2CBS untuk membuat busur belokan yang landai.
+    """
+    if len(path) < 3:
+        return path
+    
+    res = [path[0]]
+    for pt in path[1:-1]:
+        # Hanya simpan titik jika jaraknya lebih dari min_dist dari titik terakhir yang disimpan
+        if np.linalg.norm(pt - res[-1]) > min_dist:
+            res.append(pt)
+    
+    # Pastikan goal point tetap masuk
+    res.append(path[-1])
+    return np.array(res)
+
+# ── Path Post-Processing: Global Smoothing ─────────
+   # ==========================================
+# REVISI PADA: path_planning.py -> main_ros_loop
+# ==========================================
+    # ── Path Post-Processing: Global Smoothing ─────────
+    raw_path_all = np.vstack((path1, path2[1:]))
+
+    rospy.loginfo("=== Repair → Shortcut → Downsample → Chaikin → Pin WP → G2CBS ===")
+    
+    raw_repaired = repair_path_obstacles(raw_path_all, obs, margin)
+    raw_shortcut = shortcut_path(raw_repaired, obs, margin, n_iter=800, max_shortcut_m=8.0)
+    raw_downsampled = downsample_path(raw_shortcut, min_dist=2.5)
+    
+    # Lakukan smoothing Chaikin pada jalur global (memuluskan semua tikungan)
+    raw_chaikin = smooth_path_chaikin(raw_downsampled, iterations=4)
+    
+    # --- TEKNIK PIN WAYPOINT EKSAK ---
+    # Cari titik hasil Chaikin yang letaknya paling dekat dengan Waypoint
+    idx_closest = np.argmin(np.linalg.norm(raw_chaikin - np.array(waypoint), axis=1))
+    
+    # Timpa/geser titik tersebut agar sama persis dengan koordinat Waypoint
+    raw_chaikin[idx_closest] = np.array(waypoint)
+    
+    # Final Smoothing G2CBS. Karena G2CBS adalah interpolasi Spline C2,
+    # ia akan dipaksa melewati titik WP secara eksak namun tetap dengan lengkungan yang mulus.
+    full_path = smooth_path_g2cbs_c2(raw_chaikin, n_per_seg=50)
+
+def smooth_path_chaikin(path, iterations=4):
+    """
+    Algoritma Chaikin: Secara iteratif memotong 25% dari ujung tiap segmen
+    untuk menghasilkan kurva B-Spline kuadratik yang sangat mulus.
+    """
+    if len(path) < 3:
+        return path
+    
+    curr_path = path
+    for _ in range(iterations):
+        smoothed = [curr_path[0]]
+        for i in range(len(curr_path) - 1):
+            p0 = curr_path[i]
+            p1 = curr_path[i+1]
+            # Buat dua titik baru pada 25% dan 75% di sepanjang segmen garis
+            q = 0.75 * p0 + 0.25 * p1
+            r = 0.25 * p0 + 0.75 * p1
+            smoothed.extend([q, r])
+        smoothed.append(curr_path[-1])
+        curr_path = np.array(smoothed)
+    return curr_path
+
+# ==========================================
+# REVISI PADA: path_planning.py -> main_ros_loop
+# ==========================================
+    rospy.loginfo("=== Repair → Shortcut → Downsample → Chaikin → G2CBS ===")
+    
+    raw_repaired  = repair_path_obstacles(raw_path_all, obs, margin)
+    
+    # max_shortcut_m bisa dinaikkan sedikit agar garis lurusnya maksimal
+    raw_shortcut  = shortcut_path(raw_repaired, obs, margin, n_iter=600, max_shortcut_m=20.0)
+    
+    # --- TAMBAHKAN DOWNSAMPLING DI SINI ---
+    raw_downsampled = downsample_path(raw_shortcut, min_dist=3.5)
+    
+    # Masukkan hasil downsample ke Chaikin
+    raw_chaikin   = smooth_path_chaikin(raw_downsampled, iterations=4)
+    
+    # G2CBS akan memproses titik yang sudah jarang dan terpotong rapi
+    full_path     = smooth_path_g2cbs_c2(raw_chaikin, n_per_seg=30)
 
 def compute_path_curvature(path):
     """Hitung kelengkungan κ [1/m] di setiap titik — setara MATLAB computePathCurvature."""
@@ -170,39 +256,48 @@ def is_collision_free(p1, p2, obs, margin):
     return True
 
 
-def subdivide_sharp_turns(path, max_angle_deg=35.0):
+def subdivide_sharp_turns(path, max_angle_deg=25.0):
     """
-    Tambah titik tengah di kanan-kiri setiap node yang membentuk sudut tajam.
-    Memberi spline 'ruang' untuk melengkung tanpa melewati puncak sudut tajam,
-    sehingga G2CBS menghasilkan kurva halus di sekitar obstacle.
+    Menggunakan algoritma pemotongan sudut (Corner-Cutting).
+    Alih-alih mempertahankan apex (titik puncak) yang menyebabkan tekukan tajam,
+    kita menghapus apex tersebut dan menggantinya dengan ruang lengkung yang lebar.
     """
     if len(path) < 3:
         return path
-    result = [path[0]]
-    for i in range(1, len(path) - 1):
-        v1 = path[i]     - path[i - 1]
-        v2 = path[i + 1] - path[i]
-        n1 = np.linalg.norm(v1); n2 = np.linalg.norm(v2)
-        if n1 < 1e-9 or n2 < 1e-9:
-            result.append(path[i])
-            continue
-        cos_a = float(np.clip(np.dot(v1, v2) / (n1 * n2), -1.0, 1.0))
-        angle = math.degrees(math.acos(cos_a))
-        if angle > max_angle_deg:
-            result.append((path[i - 1] + path[i]) * 0.5)
-        result.append(path[i])
-        if angle > max_angle_deg:
-            result.append((path[i] + path[i + 1]) * 0.5)
-    result.append(path[-1])
-    return np.array(result)
+
+    current_path = path
+    # Lakukan 2 iterasi pemotongan untuk memastikan sudut paling tajam tereduksi mulus
+    for _ in range(2):
+        result = [current_path[0]]
+        for i in range(1, len(current_path) - 1):
+            v1 = current_path[i] - current_path[i - 1]
+            v2 = current_path[i + 1] - current_path[i]
+            n1 = np.linalg.norm(v1); n2 = np.linalg.norm(v2)
+            
+            if n1 < 1e-9 or n2 < 1e-9:
+                continue
+
+            cos_a = float(np.clip(np.dot(v1, v2) / (n1 * n2), -1.0, 1.0))
+            angle = math.degrees(math.acos(cos_a))
+
+            if angle > max_angle_deg:
+                # Potong sudut tajam: Buang titik [i], buat titik masuk & keluar
+                pt1 = current_path[i] - 0.3 * v1
+                pt2 = current_path[i] + 0.3 * v2
+                result.append(pt1)
+                result.append(pt2)
+            else:
+                result.append(current_path[i])
+        result.append(current_path[-1])
+        current_path = np.array(result)
+
+    return current_path
 
 
-def shortcut_path(path, obs, margin, n_iter=400, max_shortcut_m=5.0):
+def shortcut_path(path, obs, margin, n_iter=600, max_shortcut_m=15.0):
     """
-    Post-processing RRT*: hapus node perantara yang tidak perlu
-    jika garis lurus antara dua node bebas rintangan.
-    max_shortcut_m membatasi jarak shortcut agar node tidak terlalu
-    sedikit — spline dengan node terlalu jarang bisa overshoot besar.
+    max_shortcut_m dinaikkan dari 5.0 ke 15.0.
+    Segmen lurus yang lebih panjang memberi ruang G2CBS membentuk radius belok yang besar.
     """
     path = list(path)
     for _ in range(n_iter):
@@ -325,7 +420,7 @@ def save_and_plot_results(log_data):
 # ================================================================
 
 def main_ros_loop():
-    rospy.init_node('usv_core_node', anonymous=True)
+    rospy.init_node('usv_core_node', anonymous=False)
     pub_pose = rospy.Publisher('/usv/pose',         Pose2D, queue_size=10)
     pub_path = rospy.Publisher('/usv/planned_path', Path,   queue_size=1, latch=True)
     pub_raw  = rospy.Publisher('/usv/raw_path',     Path,   queue_size=1, latch=True)
@@ -358,22 +453,43 @@ def main_ros_loop():
     rospy.loginfo("=== RRT* Segment 2: Waypoint -> Goal ===")
     path2 = rrt_star(waypoint, goal,     obs, map_size, rrt_p, margin)
 
+    # ── Path Post-Processing: Global Smoothing ─────────
+    # Gabungkan raw path RRT* dari awal
     raw_path_all = np.vstack((path1, path2[1:]))
 
-    # ── Path Post-Processing: Repair → Shortcut → G2CBS ─────────
-    # 1. Repair: dorong node RRT* keluar dari rintangan (sparse)
-    # 2. Shortcut: hapus node perantara yang membuat sudut tajam
-    # 3. G2CBS: smooth melalui node bersih → kurva C2 yang halus
-    rospy.loginfo("=== Repair → Shortcut → G2CBS C^2 Smoothing ===")
-    raw_repaired  = repair_path_obstacles(raw_path_all, obs, margin)
-    raw_shortcut  = shortcut_path(raw_repaired, obs, margin, n_iter=600)
-    raw_subdivided = subdivide_sharp_turns(raw_shortcut, max_angle_deg=35.0)
-    full_path     = smooth_path_g2cbs_c2(raw_subdivided, n_per_seg=60)
+    rospy.loginfo("=== Repair → Shortcut → Downsample → Chaikin → Smooth Warping → G2CBS ===")
+
+    # 1. Proses secara GLOBAL agar transisi antar obstacle mulus
+    raw_repaired = repair_path_obstacles(raw_path_all, obs, margin)
+    raw_shortcut = shortcut_path(raw_repaired, obs, margin, n_iter=800, max_shortcut_m=8.0)
+    raw_downsampled = downsample_path(raw_shortcut, min_dist=2.5)
+    
+    # 2. Chaikin: Memuluskan semua sudut secara global
+    raw_chaikin = smooth_path_chaikin(raw_downsampled, iterations=4)
+    
+    # 3. --- TEKNIK SMOOTH WARPING KE WAYPOINT ---
+    # Cari indeks titik hasil Chaikin yang letaknya paling dekat dengan Waypoint
+    idx_closest = np.argmin(np.linalg.norm(raw_chaikin - np.array(waypoint), axis=1))
+    
+    # Hitung vektor jarak pergeseran yang dibutuhkan untuk menyentuh Waypoint
+    shift_vec = np.array(waypoint) - raw_chaikin[idx_closest]
+    
+    # Geser titik tersebut beserta tetangganya menggunakan fungsi distribusi Normal (Gaussian Decay).
+    # Ini memastikan garis menyentuh Waypoint dengan kelengkungan yang sempurna (tidak patah).
+    sigma = 8.0  # Parameter kelembutan. Semakin besar, kurva belokan semakin lebar dan mulus.
+    for i in range(len(raw_chaikin)):
+        dist_idx = abs(i - idx_closest)
+        weight = math.exp(-(dist_idx**2) / (2 * sigma**2))
+        raw_chaikin[i] += shift_vec * weight
+    
+    # 4. G2CBS: Kurva akan menjahit titik-titik yang sudah digeser melengkung tersebut
+    full_path = smooth_path_g2cbs_c2(raw_chaikin, n_per_seg=50)
 
     # Hitung kelengkungan untuk speed control adaptif
     path_curv = compute_path_curvature(full_path)
     n_wp      = len(full_path)
 
+    # ... (lanjut ke Logging panjang jalur dan seterusnya) ...
     # ── Logging panjang jalur (jawaban pertanyaan user) ──────────
     raw_len    = float(np.sum(np.linalg.norm(np.diff(raw_path_all, axis=0), axis=1)))
     smooth_len = float(np.sum(np.linalg.norm(np.diff(full_path,    axis=0), axis=1)))
@@ -390,7 +506,9 @@ def main_ros_loop():
 
     # ── Publish paths ke RViz ────────────────────────────────────
     def _make_path_msg(pts):
-        msg = Path(); msg.header.frame_id = "map"
+        msg = Path()
+        msg.header.frame_id = "map"
+        msg.header.stamp = rospy.Time.now()  # TAMBAHKAN BARIS INI
         for pt in pts:
             ps = PoseStamped()
             ps.pose.position.x = float(pt[0])
@@ -418,6 +536,7 @@ def main_ros_loop():
     t    = 0.0
     wp_idx      = 1       # 0-indexed (≡ MATLAB wpIdx=2)
     wp_reached  = False
+    wp_logged   = False 
     in_terminal = False   # sekali masuk terminal phase, tidak pernah keluar
     ctrl_cfg   = rospy.get_param('/ctrl', {})
     WP_RADIUS  = float(ctrl_cfg.get('WP_RADIUS', 2.0))
@@ -434,24 +553,35 @@ def main_ros_loop():
         dist_goal = math.hypot(x - goal[0], y - goal[1])
         if dist_goal < GOAL_TOL:
             rospy.loginfo(f">>> TARGET [48,13] TERCAPAI pada t = {t:.1f}s")
+            
+            # Paksa semua gaya aktuator menjadi 0 (Rem Tangan)
+            dynamics.step(np.array([0.0, 0.0, 0.0, 0.0]), dt)
+            pub_pose.publish(Pose2D(x=dynamics.state[0],
+                                    y=dynamics.state[1],
+                                    theta=dynamics.state[2]))
+            
             save_and_plot_results(log_data)
+            
+            # Matikan node agar tidak berosilasi/spiral di akhir
+            rospy.signal_shutdown("Selesai")
             break
 
         # ── WAYPOINT CHECK ───────────────────────────────────────
         dist_wp = math.hypot(x - waypoint[0], y - waypoint[1])
         if not wp_reached and dist_wp < WP_RADIUS:
             wp_reached = True
-            # Reset semua state controller di WP agar segmen kedua
-            # mulai bersih tanpa sisa heading/integral dari segmen pertama
-            controller.beta_hat     = 0.0
-            controller.eInt_psi     = 0.0
-            controller.eInt_u       = 0.0
-            controller.psi_d_filtered = psi   # sinkronkan dengan heading aktual
-            rospy.loginfo(f">>> Waypoint tercapai pada t = {t:.1f}s")
-
+            # Reset beta_hat + eInt agar tidak ada sisa bias segmen-1 masuk segmen-2.
+            # Dengan WP_RADIUS=4.0m, reset terjadi 1.5m sebelum kurva WP mulai (aman).
+            # psi_d_filtered TIDAK di-reset (menyebabkan lonjakan heading command).
+            controller.beta_hat = 0.0
+            controller.eInt_psi = 0.0
+            controller.eInt_u   = 0.0
+        if not wp_logged and dist_wp < 0.5:
+            rospy.loginfo(f">>> Waypoint TEPAT dilewati pada t = {t:.1f}s")
+            wp_logged = True
         # ── ADVANCE wp_idx ───────────────────────────────────────
-        # Search 80 titik ke depan (≈ 2m pada kepadatan ~0.025m/titik)
-        search_end = min(wp_idx + 50, n_wp)
+        # Search 100 titik ke depan (≈ 3m pada kepadatan ~0.03m/titik)
+        search_end = min(wp_idx + 100, n_wp)
         dists_near = [math.hypot(full_path[i][0] - x, full_path[i][1] - y)
                       for i in range(wp_idx, search_end)]
         local_min  = int(np.argmin(dists_near))
@@ -460,10 +590,13 @@ def main_ros_loop():
             wp_idx = new_idx
 
         # ── LOOKAHEAD: curvature-adaptive ────────────────────────
-        # Di tikungan tajam, lookahead dikurangi agar kapal tidak
-        # mengarah ke titik "sisi lain" kurva dan overshoot keluar jalur.
+        # Disesuaikan dengan ILOS_Delta=2.5: lookahead=2.5m di lurus,
+        # dikurangi di tikungan agar chord wp_prev→wp_next tetap pendek
+        # sehingga kapal mengikuti lengkung path (tidak memotong sudut).
         curv_now  = abs(path_curv[min(wp_idx, len(path_curv) - 1)])
-        lookahead = max(0.8, 1.5 - 4.0 * curv_now)
+        # Minimum lookahead = ILOS_Delta = 2.0m agar geometri ILOS selalu konsisten.
+        # Lookahead < delta menyebabkan alpha tidak stabil saat tikungan tajam.
+        lookahead = max(2.0, 2.5 - 3.0 * curv_now)
         idx_next  = wp_idx
         for i in range(wp_idx, n_wp):
             if math.hypot(full_path[i][0] - x, full_path[i][1] - y) >= lookahead:
@@ -478,38 +611,39 @@ def main_ros_loop():
         # ── SPEED TARGET berbasis kelengkungan ───────────────────
         U0_target   = float(ctrl_cfg.get('U0_target',      1.5))
         curv_thresh = float(ctrl_cfg.get('U0_curv_thresh', 0.12))
-        curv_speed  = float(ctrl_cfg.get('U0_curv_speed',  1.25))
-        # Lihat 120 titik ke depan (~8m): deteksi tikungan lebih awal
-        # sehingga kapal sudah melambat sebelum masuk tikungan besar
+        curv_speed  = float(ctrl_cfg.get('U0_curv_speed', 1.1))  # dari params.yaml
+        
+        # Lihat 600 titik ke depan (~2m): deteksi tikungan cukup awal
+        # kapal lambat hanya ~10s di sekitar belokan, lurus tetap 1.5 m/s
         curv_end    = min(wp_idx + 120, n_wp)
         future_curv = float(np.max(np.abs(path_curv[wp_idx:curv_end]))) \
                       if wp_idx < curv_end else 0.0
 
         # ── TERMINAL PHASE ──────────────────────────────────────────
-        # in_terminal = True sekali dipasang, TIDAK pernah dilepas.
-        # Ini mencegah kapal keluar dari terminal phase saat overshoot
-        # dan ILOS lama aktif kembali (penyebab lingkaran besar).
-        if dist_goal < WP_RADIUS:
+        # Reset integrator hanya sekali saat pertama masuk terminal
+        if dist_goal < WP_RADIUS and not in_terminal:
             in_terminal = True
-
-        if in_terminal:
-            wp_prev   = np.array([x, y], dtype=float)
-            wp_next   = np.array(goal,   dtype=float)
-            # Linear decel kontinu dari WP_RADIUS (4m) → 0
-            # Continuity: di batas WP_RADIUS, cocok dengan zona 10m
-            target_U0 = max(0.0, U0_target * (dist_goal / 10.0))
             controller.beta_hat = 0.0
             controller.eInt_psi = 0.0
             controller.eInt_u   = 0.0
+
+        if dist_goal < GOAL_TOL:
+            # Berhenti total persis di goal
+            target_U0 = 0.0
+            controller.eInt_u = 0.0
+            # JANGAN reset Ku['i'] — itu merusak dictionary gains secara permanen
+        elif in_terminal:
+            # Pengereman mulus saat masuk zona radius goal
+            target_U0 = max(0.0, U0_target * math.sqrt(max(0.0, dist_goal - GOAL_TOL) / max(1e-3, WP_RADIUS)))
+            # JANGAN reset beta_hat setiap step — sudah dilakukan sekali saat masuk terminal
         elif dist_goal < 10.0:
-            # Deceleration zone 10m → WP_RADIUS: wp_prev dari posisi kapal
-            # (bukan path point) agar ILOS tidak salah hitung CTE saat overshoot
-            wp_prev   = np.array([x, y], dtype=float)
-            wp_next   = np.array(goal,  dtype=float)
-            target_U0 = max(0.0, U0_target * (dist_goal / 10.0))
+            # Mulai persiapan mengerem dari jarak 10 meter
+            target_U0 = max(0.0, U0_target * math.sqrt(max(0.0, dist_goal - GOAL_TOL) / 10.0))
         elif future_curv > curv_thresh:
+            # Jika terdeteksi ada belokan tajam di depan, turunkan ke 1.1 m/s
             target_U0 = curv_speed
         else:
+            # Jika trek lurus, pertahankan kecepatan maksimal 1.5 m/s
             target_U0 = U0_target
 
         # ── CONTROL & DYNAMICS ──────────────────────────────────

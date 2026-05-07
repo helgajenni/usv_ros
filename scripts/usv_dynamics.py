@@ -8,26 +8,41 @@ class USVDynamics:
         # Mengambil dictionary '/usv' dari ROS Parameter Server
         usv_p = rospy.get_param('/usv', {})
         
-        # Dictionary nilai default untuk A1-A27 sebagai fallback pengaman
+        # Dictionary nilai default A1-A22 (Model Identifikasi Baru)
+        # Relasi: A10 = (A1/A18)*A19, A11 = (1/A18)*A19
         default_A = {
-            'A1': 1.0059,  'A2': -0.0087, 'A3': -0.2041, 'A4': -0.1302,
-            'A5': -0.8849, 'A6': 2.9728,  'A7': -0.3969, 'A8': 3.4876,
-            'A9': 6.8460,  'A10': 0.0000, 'A11': 0.0000, 'A12': -0.3062,
-            'A13': 0.5764, 'A14': -0.9204, 'A15': 0.0000, 'A16': 0.2530,
-            'A17': 0.0003, 'A18': 0.0007, 'A19': 0.0500, 'A20': 0.0000,
-            'A21': 0.0000, 'A22': 0.0000, 'A23': 1.4384, 'A24': 0.0066,
-            'A25': 0.0291, 'A26': -0.0001, 'A27': 0.0000
+            'A1':   1.5066, 'A2':  -0.7405, 'A3':   0.4219, 'A4':  -0.1397,
+            'A5':  -0.1464, 'A6':  -3.1952, 'A7':   4.1189, 'A8':   0.0000,
+            'A9':   0.0000, 'A10':  0.0845, 'A11':  0.0561, 'A12': -1.0495,
+            'A13':  1.4038, 'A14': -2.0764, 'A15':  0.0010, 'A16':  0.9671,
+            'A17':  0.0021, 'A18':  0.0178, 'A19':  0.0010, 'A20':  0.0000,
+            'A21':  0.0000, 'A22':  0.0000,
         }
-        
-        # Loop otomatis untuk mengisi self.A dari YAML
+
+        # Dictionary nilai default parameter roll (menggantikan A23-A27)
+        default_K = {
+            'KpLin':  0.0000,   # Redaman roll linier
+            'KpAbs':  0.0000,   # Redaman roll kuadratik
+            'KpCub':  0.0000,   # Redaman roll kubik
+            'Kphi':  13.5523,   # Momen righting: -Kphi * sin(phi)
+            'Kfy':   -0.0175,   # Coupling sway force ke roll
+            'Kv':    -3.3096,   # Coupling sway velocity ke roll
+            'Kr':    -2.7576,   # Coupling yaw rate ke roll
+            'Kdelta': 0.1738,   # Efek sudut kemudi (delta) ke roll
+            'Kbias': -0.3631,   # Bias roll konstan
+        }
+
+        # Loop otomatis untuk mengisi self.A dan self.K dari YAML
         self.A = {}
         for key, default_val in default_A.items():
             self.A[key] = float(usv_p.get(key, default_val))
-            
+
+        self.K = {}
+        for key, default_val in default_K.items():
+            self.K[key] = float(usv_p.get(key, default_val))
+
         # State awal kapal (diambil dari parameter start: [1.0, 8.0])
         start_pt = rospy.get_param('/mission/start', [1.0, 8.0])
-        # Gain aktuasi roll (TK -> dp): merepresentasikan kontrol stabilisasi roll
-        self.k_TK = 0.15
 
         self.state = np.array([start_pt[0], start_pt[1], 0.0, 0.0, 1.5, 0.0, 0.0, 0.0])
 
@@ -41,14 +56,46 @@ class USVDynamics:
         p = np.clip(p, -5, 5)
         phi = np.clip(phi, -math.radians(30), math.radians(30))
         
-        Fx, Fy, Fk = T[0], T[2], T[3] # TX (Surge), TN (Yaw), TK (Roll)
+        # Pemetaan input aktuator:
+        #   T[0] = TX  → Fx    (gaya surge [N])
+        #   T[1] = TY  → Fy    (gaya sway / bow thruster [N], biasanya 0)
+        #   T[2] = TN  → Fy_yn (melalui A19 ke yaw, setara kontrol yaw lama)
+        #   T[3] = TK  → delta (sudut kemudi [rad], mempengaruhi roll via Kdelta)
+        Fx    = T[0]   # surge force
+        Fy    = T[1]   # sway force (TY, = 0 dari controller)
+        Fy_yn = T[2]   # yaw control: masuk ke dr sebagai A19 * Fy_yn (ganti TN lama)
+        delta = T[3]   # sudut kemudi [rad] (ganti TK lama)
         A = self.A
-        
-        # Dinamika Taylor 4-DOF
-        du = A['A1']*v*r + A['A2']*u + A['A3']*abs(u)*u + A['A4']*(abs(u)**2)*u + A['A18']*Fx
-        dv = -(1/A['A1'])*u*r + A['A5']*v + A['A6']*abs(v)*v + A['A7']*(abs(v)**2)*v + A['A8']*abs(r)*v + A['A9']*abs(v)*r
-        dp = A['A20']*p + A['A21']*abs(p)*p + A['A22']*(abs(p)**2)*p - A['A23']*phi + A['A24']*u*r + A['A25']*v + A['A26']*Fy + self.k_TK*Fk
-        dr = -A['A10']*v*u + A['A11']*u*v + A['A12']*r + A['A13']*abs(r)*r + A['A14']*(abs(r)**2)*r + A['A15']*abs(r)*u + A['A16']*abs(u)*r + A['A17']*abs(u)*u + A['A19']*Fy
+        K = self.K
+
+        # ── Surge ────────────────────────────────────────────────────
+        du = (A['A1']*v*r
+              + A['A2']*u + A['A3']*abs(u)*u + A['A4']*(abs(u)**2)*u
+              + A['A18']*Fx)
+
+        # ── Sway ─────────────────────────────────────────────────────
+        dv = (-(1.0/A['A1'])*u*r
+              + A['A5']*v + A['A6']*abs(v)*v + A['A7']*(abs(v)**2)*v
+              + A['A8']*abs(r)*v + A['A9']*abs(v)*r)
+
+        # ── Roll (Model Baru: sin(phi), Kv, Kr, Kdelta, Kbias) ───────
+        dp = (-K['KpLin']*p
+              - K['KpAbs']*abs(p)*p
+              - K['KpCub']*(abs(p)**2)*p
+              - K['Kphi']*math.sin(phi)
+              + K['Kfy']*Fy
+              + K['Kv']*v
+              + K['Kr']*r
+              + K['Kdelta']*delta
+              + K['Kbias'])
+
+        # ── Yaw (tambah A20, A21, A22; kontrol melalui A19*Fy_yn) ────
+        dr = (-A['A10']*v*u + A['A11']*u*v
+              + A['A12']*r + A['A13']*abs(r)*r + A['A14']*(abs(r)**2)*r
+              + A['A15']*abs(r)*u + A['A16']*abs(u)*r + A['A17']*abs(u)*u
+              + A['A20']*abs(r)*u + A['A21']*abs(u)*r + A['A22']*abs(u)*u
+              + A['A19']*Fy          # coupling sway force ke yaw (fisik)
+              + A['A19']*Fy_yn)      # kontrol yaw (TN → melalui A19, limit 1750 N)
         
         # Anti-windup / Acceleration bounding
         du = np.clip(du, -10, 10)

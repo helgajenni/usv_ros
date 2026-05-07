@@ -15,29 +15,29 @@ class USVController:
         l = rospy.get_param('/usv/lims', {})
 
         # ILOS Guidance
-        self.delta    = float(c.get('ILOS_Delta', 2.5))
+        self.delta    = float(c.get('ILOS_Delta', 1.8))
         self.gamma    = float(c.get('ILOS_gamma', 0.5))
-        self.kappa    = float(c.get('ILOS_kappa', 0.02))
+        self.kappa    = float(c.get('ILOS_kappa', 0.45))
         self.beta_hat = 0.0
         self.psi_d_filtered = 0.0  # Diinisialisasi dari main loop
 
         # PID Gains
-        self.Ku   = {'p': float(c.get('Ku_p',   800.0)),
-                     'i': float(c.get('Ku_i',    10.0)),
-                     'd': float(c.get('Ku_d',   150.0))}
-        self.Kpsi = {'p': float(c.get('Kpsi_p',  45.0)),
-                     'i': float(c.get('Kpsi_i',   1.5)),
-                     'd': float(c.get('Kpsi_d',  20.0))}
-        self.Kphi = {'p': float(c.get('Kphi_p',   5.0)),
-                     'i': float(c.get('Kphi_i',   0.1)),
-                     'd': float(c.get('Kphi_d',   2.0))}
+        self.Ku   = {'p': float(c.get('Ku_p',   55.0)),
+                     'i': float(c.get('Ku_i',     0.5)),
+                     'd': float(c.get('Ku_d',    7.0))}
+        self.Kpsi = {'p': float(c.get('Kpsi_p',   2300.0)),
+                     'i': float(c.get('Kpsi_i',    75.0)),
+                     'd': float(c.get('Kpsi_d',   3100.0))}
+        self.Kphi = {'p': float(c.get('Kphi_p',    70.0)),
+                     'i': float(c.get('Kphi_i',    0.5)),
+                     'd': float(c.get('Kphi_d',    45.0))}
 
         self.eInt_u   = 0.0
         self.eInt_psi = 0.0
         self.eInt_phi = 0.0
         self.intMax   = {'u':   float(c.get('intMax_u',   25.0)),
                          'psi': float(c.get('intMax_psi',  8.0)),
-                         'phi': float(c.get('intMax_phi',  3.0))}
+                         'phi': float(c.get('intMax_phi',  1.0))}
         self.psi_e_prev = 0.0
 
         self.U0_saved     = float(c.get('U0_target', 1.5))
@@ -109,15 +109,17 @@ class USVController:
         if abs(ye) > 5.0:
             self.beta_hat = 0.0
 
-        max_ye       = self.delta * 1.2
+        delta_adaptive = self.delta  # fixed lookahead, mencegah ILOS osilasi saat ye besar
+
+        max_ye       = delta_adaptive * 1.2
         ye_clamped   = float(np.clip(ye, -max_ye, max_ye))
 
-        self.beta_hat += dt * self.kappa * (ye_clamped / self.delta)
-        self.beta_hat  = float(np.clip(self.beta_hat, -0.8, 0.8))
+        self.beta_hat += dt * self.kappa * (ye_clamped / delta_adaptive)
+        self.beta_hat  = float(np.clip(self.beta_hat, -1.0, 1.0))
 
         psi_d_raw = self.wrap_to_pi(
             alpha - math.atan2(ye_clamped + self.gamma * self.beta_hat,
-                               self.delta))
+                               delta_adaptive))
 
         # Low-pass filter psi_d (alpha=0.7): lebih responsif untuk antisipasi tikungan
         self.psi_d_filtered += 0.7 * self.wrap_to_pi(psi_d_raw - self.psi_d_filtered)
@@ -129,7 +131,11 @@ class USVController:
 
         # ── 3. SPEED SETPOINT ────────────────────────────────────
         # target_U0 sudah dihitung berbasis curvature di main loop
-        self.U0_saved += 0.15 * (target_U0 - self.U0_saved)  # alpha_u=0.15
+        if dist_goal < 6.0:
+            self.U0_saved = target_U0
+        else:
+            self.U0_saved += 0.15 * (target_U0 - self.U0_saved)  # alpha_u=0.15
+
         e_u = self.U0_saved - u
 
         # ── 4. ROLL REFERENCE (banking) ──────────────────────────
@@ -157,24 +163,27 @@ class USVController:
                                       -self.intMax['phi'], self.intMax['phi']))
 
         # ── 6. DERIVATIVE FILTER ─────────────────────────────────
-        self.filt_r += 0.3 * (r - self.filt_r)
-        self.filt_p += 0.3 * (p - self.filt_p)
+        # α=0.1 (bukan 0.3): lebih agresif mengeliminasi noise roll (ωn≈3.7 rad/s)
+        # yang masuk ke D-term yaw via filt_r → mengurangi feedback roll-yaw-CTE
+        self.filt_r += 0.1 * (r - self.filt_r)
+        self.filt_p += 0.1 * (p - self.filt_p)
 
         # ── 7. PID CONTROL OUTPUTS ───────────────────────────────
         # TX: feedforward (steady-state thrust) + PID correction
-        # TX_ff memastikan kapal bisa mencapai u=1.5 m/s meski A18=0.0007 kecil
+        # TX_ff = -(A2*u + A3*|u|u + A4*|u|²u) / A18  saat steady state (du=0)
+        # Parameter baru: A2=-0.7405, A3=+0.4219, A4=-0.1397, A18=0.0178
         u_ref  = self.U0_saved
-        TX_ff  = (0.0087*u_ref
-                  + 0.2041*abs(u_ref)*u_ref
-                  + 0.1302*(u_ref**2)*u_ref) / 0.0007
+        TX_ff  = (0.7405*u_ref
+                  - 0.4219*abs(u_ref)*u_ref
+                  + 0.1397*(u_ref**2)*u_ref) / 0.0178 + self.Ku['d'] * u_ref
         TX = TX_ff + self.Ku['p']*e_u + self.Ku['i']*self.eInt_u - self.Ku['d']*u
 
-        # TN: yaw torque (limit 35 Nm sesuai MATLAB)
+        # TN: yaw control force [N] (bow thruster equivalent, limit 1750 N)
         TN = (self.Kpsi['p']*psi_e
               + self.Kpsi['i']*self.eInt_psi
               - self.Kpsi['d']*self.filt_r)
 
-        # TK: roll stabilization
+        # TK: roll stabilization (PID saja — feedforward saturasi aktuator dan counterproductive)
         TK = (self.Kphi['p']*e_phi
               + self.Kphi['i']*self.eInt_phi
               - self.Kphi['d']*self.filt_p)

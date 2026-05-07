@@ -228,6 +228,10 @@ class RVizVisualizer:
             boat_marker.header.stamp = now
             self.pub_boat.publish(boat_marker)
 
+            # Reset trail jika posisi melompat jauh (simulasi baru dimulai)
+            if self.trail_points and math.hypot(msg.x - self.trail_points[-1][0],
+                                                msg.y - self.trail_points[-1][1]) > 5.0:
+                self.trail_points = []
             self.trail_points.append([msg.x, msg.y])
             if len(self.trail_points) > 1:
                 trail_marker = self.get_trail_marker()
