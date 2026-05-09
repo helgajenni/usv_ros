@@ -25,12 +25,12 @@ class USVController:
         self.Ku   = {'p': float(c.get('Ku_p',   55.0)),
                      'i': float(c.get('Ku_i',     0.5)),
                      'd': float(c.get('Ku_d',    7.0))}
-        self.Kpsi = {'p': float(c.get('Kpsi_p',   2300.0)),
+        self.Kpsi = {'p': float(c.get('Kpsi_p',   2250.0)),
                      'i': float(c.get('Kpsi_i',    75.0)),
-                     'd': float(c.get('Kpsi_d',   3100.0))}
-        self.Kphi = {'p': float(c.get('Kphi_p',    70.0)),
+                     'd': float(c.get('Kpsi_d',   2000.0))}
+        self.Kphi = {'p': float(c.get('Kphi_p',    120.0)),
                      'i': float(c.get('Kphi_i',    0.5)),
-                     'd': float(c.get('Kphi_d',    45.0))}
+                     'd': float(c.get('Kphi_d',    80.0))}
 
         self.eInt_u   = 0.0
         self.eInt_psi = 0.0
@@ -45,19 +45,19 @@ class USVController:
         self.filt_p       = 0.0
         self.phi_des_prev = 0.0
 
-        self.k_bank  = 0.3
-        self.phi_max = math.radians(4.0)
+        self.k_bank  = 0.4
+        self.phi_max = math.radians(10.0) #ini tuh 0.7 rad
         self.g       = 9.81
 
         # Actuator Limits (dari params.yaml /usv/lims)
         self.lims = {
-            'TX':  float(l.get('TX',   2500.0)),
+            'TX':  float(l.get('TX',   200.0)),
             'TY':  float(l.get('TY',     60.0)),
-            'TN':  float(l.get('TN',     35.0)),
-            'TK':  float(l.get('TK',     60.0)),
+            'TN':  float(l.get('TN',     1750.0)),
+            'TK':  float(l.get('TK',     0.7)),
             'dTX': float(l.get('dTX',   200.0)),
-            'dTN': float(l.get('dTN',   150.0)),
-            'dTK': float(l.get('dTK',   200.0)),
+            'dTN': float(l.get('dTN',   7500.0)),
+            'dTK': float(l.get('dTK',   5.0)),
         }
 
         self.TX_prev = 0.0
@@ -138,17 +138,15 @@ class USVController:
 
         e_u = self.U0_saved - u
 
-        # ── 4. ROLL REFERENCE (banking) ──────────────────────────
-        U_eff   = max(0.3, math.hypot(u, v))
-        kappa_a = 2.0 * math.sin(psi_e) / max(0.5, self.delta)
-        phi_cmd = float(np.clip(
-            self.k_bank * math.atan(U_eff**2 * kappa_a / self.g),
-            -self.phi_max, self.phi_max))
-        tau_phi  = 1.0
-        alpha_phi = dt / (tau_phi + dt)
-        phi_des   = self.phi_des_prev + alpha_phi * (phi_cmd - self.phi_des_prev)
+        ## ── 4. ROLL REFERENCE (banking) ──────────────────────────────
+        phi_des = 0.0                        # ← Selalu ingin tegak
         self.phi_des_prev = phi_des
-        e_phi = phi_des - phi
+        e_phi = phi_des - phi                # ← Error = seberapa miring kapal
+
+        # Integral dengan anti-windup
+        self.eInt_phi = float(np.clip(
+        self.eInt_phi + e_phi * dt,
+        -self.intMax['phi'], self.intMax['phi']))
 
         # ── 5. ANTI-WINDUP ───────────────────────────────────────
         if t > 0 and (psi_e * self.psi_e_prev < 0):
@@ -166,7 +164,7 @@ class USVController:
         # α=0.1 (bukan 0.3): lebih agresif mengeliminasi noise roll (ωn≈3.7 rad/s)
         # yang masuk ke D-term yaw via filt_r → mengurangi feedback roll-yaw-CTE
         self.filt_r += 0.1 * (r - self.filt_r)
-        self.filt_p += 0.1 * (p - self.filt_p)
+        self.filt_p += 0.05 * (p - self.filt_p)
 
         # ── 7. PID CONTROL OUTPUTS ───────────────────────────────
         # TX: feedforward (steady-state thrust) + PID correction
@@ -183,10 +181,10 @@ class USVController:
               + self.Kpsi['i']*self.eInt_psi
               - self.Kpsi['d']*self.filt_r)
 
-        # TK: roll stabilization (PID saja — feedforward saturasi aktuator dan counterproductive)
-        TK = (self.Kphi['p']*e_phi
-              + self.Kphi['i']*self.eInt_phi
-              - self.Kphi['d']*self.filt_p)
+        # TK: 0 (rudder tidak dipakai untuk roll)
+        TK = (self.Kphi['p'] * e_phi
+            + self.Kphi['i'] * self.eInt_phi
+            - self.Kphi['d'] * self.filt_p)
 
         TY = 0.0
 

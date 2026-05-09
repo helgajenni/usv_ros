@@ -9,7 +9,6 @@ class USVDynamics:
         usv_p = rospy.get_param('/usv', {})
         
         # Dictionary nilai default A1-A22 (Model Identifikasi Baru)
-        # Relasi: A10 = (A1/A18)*A19, A11 = (1/A18)*A19
         default_A = {
             'A1':   1.5066, 'A2':  -0.7405, 'A3':   0.4219, 'A4':  -0.1397,
             'A5':  -0.1464, 'A6':  -3.1952, 'A7':   4.1189, 'A8':   0.0000,
@@ -44,7 +43,18 @@ class USVDynamics:
         # State awal kapal (diambil dari parameter start: [1.0, 8.0])
         start_pt = rospy.get_param('/mission/start', [1.0, 8.0])
 
-        self.state = np.array([start_pt[0], start_pt[1], 0.0, 0.0, 1.5, 0.0, 0.0, 0.0])
+        # ✅ PERBAIKAN: START DARI DIAM (u=0), BUKAN u=1.5
+        # state = [x, y, psi, phi, u, v, r, p]
+        self.state = np.array([
+            start_pt[0],  # x = 1.0
+            start_pt[1],  # y = 8.0
+            0.0,          # psi (heading) = 0
+            0.0,          # phi (roll) = 0
+            0.0,          # u (surge velocity) = 0 ← DIUBAH DARI 1.5!
+            0.0,          # v (sway velocity) = 0
+            0.0,          # r (yaw rate) = 0
+            0.0           # p (roll rate) = 0
+        ])
 
     def taylor_4dof(self, V, T, psi, phi):
         u, v, r, p = V[0], V[1], V[2], V[3]
@@ -57,14 +67,10 @@ class USVDynamics:
         phi = np.clip(phi, -math.radians(30), math.radians(30))
         
         # Pemetaan input aktuator:
-        #   T[0] = TX  → Fx    (gaya surge [N])
-        #   T[1] = TY  → Fy    (gaya sway / bow thruster [N], biasanya 0)
-        #   T[2] = TN  → Fy_yn (melalui A19 ke yaw, setara kontrol yaw lama)
-        #   T[3] = TK  → delta (sudut kemudi [rad], mempengaruhi roll via Kdelta)
         Fx    = T[0]   # surge force
         Fy    = T[1]   # sway force (TY, = 0 dari controller)
-        Fy_yn = T[2]   # yaw control: masuk ke dr sebagai A19 * Fy_yn (ganti TN lama)
-        delta = T[3]   # sudut kemudi [rad] (ganti TK lama)
+        Fy_yn = T[2]   # yaw control: masuk ke dr sebagai A19 * Fy_yn
+        delta = T[3]   # sudut kemudi [rad]
         A = self.A
         K = self.K
 
@@ -95,7 +101,7 @@ class USVDynamics:
               + A['A15']*abs(r)*u + A['A16']*abs(u)*r + A['A17']*abs(u)*u
               + A['A20']*abs(r)*u + A['A21']*abs(u)*r + A['A22']*abs(u)*u
               + A['A19']*Fy          # coupling sway force ke yaw (fisik)
-              + A['A19']*Fy_yn)      # kontrol yaw (TN → melalui A19, limit 1750 N)
+              + A['A19']*Fy_yn)      # kontrol yaw (TN → melalui A19)
         
         # Anti-windup / Acceleration bounding
         du = np.clip(du, -10, 10)
@@ -126,7 +132,7 @@ class USVDynamics:
         # Euler Integration
         new_x = self.state[0] + eta_dot[0] * dt
         new_y = self.state[1] + eta_dot[1] * dt
-        new_psi = (self.state[2] + eta_dot[2] * dt + np.pi) % (2 * np.pi) - np.pi # wrapToPi
+        new_psi = (self.state[2] + eta_dot[2] * dt + np.pi) % (2 * np.pi) - np.pi
         new_phi = self.state[3] + eta_dot[3] * dt
         
         new_u = np.clip(self.state[4] + Vdot[0] * dt, -5, 5)
