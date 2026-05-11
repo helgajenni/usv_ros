@@ -1,8 +1,0 @@
-prefix=/home/helga/catkin_ws/devel
-
-Name: my_usv_pkg
-Description: Description of my_usv_pkg
-Version: 0.0.1
-Cflags: 
-Libs: -L${prefix}/lib 
-Requires: 
