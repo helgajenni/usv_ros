@@ -1,0 +1,228 @@
+# config/params.yaml
+# Semua parameter disinkronkan dengan MATLAB reference implementation
+# ================================================================
+
+map:
+  size: [33.0, 50.0]   # [yMax, xMax] dalam meter
+  obstacles:
+    - [10.0, 10.0, 0.25]
+    - [20.0, 20.0, 0.25]
+    - [30.0, 10.0, 0.25]
+    - [40.0, 20.0, 0.25]
+    - [17.0, 16.5, 0.25]
+    - [41.0, 16.0, 0.25]
+
+mission:
+  start:    [1.0,  8.0]
+  waypoint: [25.0, 20.0]
+  goal:     [48.0, 13.0]
+
+safety_margin:  1.5   # lebih besar dari display_margin=1.0 → path jelas di luar lingkaran visual
+display_margin: 1.0
+
+# ── USV Physical Model (Taylor 4-DOF, Identifikasi Baru) ─────────
+usv:
+  L: 1.6
+  B: 0.4
+  m: 11.8
+  g: 9.81
+
+  # Parameter Identifikasi A1-A22 (Model Baru — Surge, Sway, Yaw)
+  # Relasi internal: A10 = (A1/A18)*A19, A11 = (1/A18)*A19
+  A1:   1.5066
+  A2:  -0.7405   # Redaman surge linier
+  A3:   0.4219   # Redaman surge kuadratik (positif pada identifikasi ini)
+  A4:  -0.1397   # Redaman surge kubik
+  A5:  -0.1464   # Redaman sway linier
+  A6:  -3.1952   # Redaman sway kuadratik
+  A7:   4.1189   # Redaman sway kubik
+  A8:   0.0000
+  A9:   0.0000
+  A10:  0.0845   # = (A1/A18)*A19 = (1.5066/0.0178)*0.001
+  A11:  0.0561   # = (1/A18)*A19  = (1/0.0178)*0.001
+  A12: -1.0495   # Redaman yaw linier
+  A13:  1.4038   # Redaman yaw kuadratik
+  A14: -2.0764   # Redaman yaw kubik
+  A15:  0.0010
+  A16:  0.9671   # Coupling |u|r → yaw (threshold instabilitas: u > 1.085 m/s)
+  A17:  0.0021
+  A18:  0.0178   # Koefisien gaya surge (TX → du)
+  A19:  0.0010   # Koefisien gaya sway ke yaw (Fy → dr)
+  A20:  0.0000
+  A21:  0.0000
+  A22:  0.0000
+
+  # Parameter Model Roll (Identifikasi Baru — menggantikan A23-A27)
+  KpLin:   0.0000   # Redaman roll linier (-KpLin * p)
+  KpAbs:   0.0000   # Redaman roll kuadratik (-KpAbs * |p|p)
+  KpCub:   0.0000   # Redaman roll kubik (-KpCub * |p|²p)
+  Kphi:   13.5523   # Momen righting gravitasi (-Kphi * sin(phi))
+  Kfy:    -0.0175   # Coupling gaya sway ke roll (Kfy * Fy)
+  Kv:     -3.3096   # Coupling kecepatan sway ke roll (Kv * v)
+  Kr:     -2.7576   # Coupling yaw rate ke roll (Kr * r)
+  Kdelta:  0.1738   # Efek sudut kemudi ke roll (Kdelta * delta)
+  Kbias:  -0.3631   # Bias roll konstan
+
+  # Limit Aktuator (disesuaikan dengan parameter identifikasi baru)
+  lims:
+    TX:   200.0   # Berkurang: A18 baru 25× lebih besar → gaya surge jauh lebih kecil
+    TY:    60.0   # Gaya sway (bow thruster) [N]
+    TN:  1750.0   # Dinaikkan 50×: A19 baru 50× lebih kecil → TN perlu 50× lebih besar
+    TK:     0.7   # Sudut kemudi delta [rad] ≈ ±40°
+    dTX:  200.0   # Rate limiter surge [N/s]
+    dTN:  7500.0  # Rate limiter yaw, proporsional dengan Kpsi_d=2000 [N/s]
+    dTK:    5.0   # Rate limiter kemudi [rad/s]: rudder gerak lebih pelan
+
+# ── RRT* Path Planning ────────────────────────────────────────────
+rrt:
+  maxIter:  800
+  stepSize: 1.0
+  goalBias: 0.15
+  goalTol:  1.0
+  rewireRad: 3.0
+
+# ── Controller (ILOS + PID 4-DOF) ────────────────────────────────
+ctrl:
+  dt: 0.05
+
+  # ILOS Guidance
+  ILOS_Delta: 1.8     # 1.8 terlalu agresif (oscillasi); 2.0: ye_ss=0.14m
+  ILOS_gamma: 0.5
+  ILOS_kappa: 0.45
+
+  # Surge PID — disesuaikan: A18 baru 25× lebih besar → gains turun ~25× agar koreksi setara
+  # Efektif sama: A18_new * Ku_p_new * e_u ≈ A18_old * Ku_p_old * e_u
+  Ku_p:  55.0
+  Ku_i:   0.5
+  Ku_d:   7.0
+
+  # Yaw PID — disesuaikan: A19 baru 50× lebih kecil → gains naik 50× agar otoritas setara
+  # Kpsi_d=2000: τ_yaw = 1/(A19·Kd − (A12+A16·u)) = 1/(2.0−0.208) = 0.558s
+  # ye_ss = U·κ·delta/(A19·Kd−(A12+A16·u)) = 1.3×0.1×2.0/1.79 = 0.145m ✓
+  # Kpsi_d>2000: koreksi heading lebih besar → r lebih besar → roll osilasi via Kr·r → CTE naik
+  Kpsi_p: 2250.0   
+  Kpsi_i:   75.0    
+  Kpsi_d: 2000.0
+
+  # Roll PID — TK = delta [rad]; gains dihitung untuk ζ=0.70, ωn=5 rad/s
+  # ωn  = √(Kphi + Kdelta·Kphi_p) = √(13.5523 + 0.1738·65) = 5.0 rad/s
+  # ζ   = Kdelta·Kphi_d / (2·ωn)  = 0.1738·40 / (2·5.0)    = 0.70
+  Kphi_p: 120.0
+  Kphi_i:  1.0
+  Kphi_d: 80.0
+
+  # Integrator limits (sesuai MATLAB intMax)
+  intMax_u:   25.0
+  intMax_psi:  8.0
+  intMax_phi:  1.0   # Kphi_i·intMax = 0.5·1.0 = 0.5 rad (< TK_max=0.7 rad)
+
+  # Misi
+  WP_RADIUS:  4.0    # kurva WP mulai 2.5m sebelum WP; reset terjadi 1.5m sebelum kurva (aman)
+  GOAL_TOL:   1.5    # 0.5→1.5: stop lebih awal sebelum overshoot goal
+  fade_in:    4.0    # MATLAB: 4.0 detik ramp (bukan 1.5 yang lama)
+
+  # Speed control (sesuai MATLAB)
+  U0_target:      1.5
+  U0_curv_thresh: 0.10   # Deteksi tikungan: radius < 8m
+  U0_curv_speed:  1.1   # lebih lambat di tikungan: CTE_transient ∝ U, target <0.4m
+  alpha_u:        0.15   # low-pass filter kecepatan
+
+  #timeout
+  max_sim_time: 70.0 #batas waktu simulasi (s)
+
+# LMPC — Linear Model Predictive Control untuk Dynamic Obstacle Avoidance
+# Referensi: Kufoalor et al. (2020), Journal of Field Robotics
+# ================================================================
+
+lmpc:
+  # ── Sampling & Horizon ───────────────────────────────────────────────────
+  dt:  0.05    # [s] SAMA dengan controller utama (jangan ubah)
+  N:   15      # Prediction horizon: 15 × 0.05s = 0.75s ke depan
+               # Cukup untuk deteksi & hindari obstacle bergerak lambat
+               # Terlalu besar: komputasi lambat; Terlalu kecil: reaksi terlambat
+  Nc:  8       # Control horizon: 8 ≤ N=15
+               # Nc=8 memberikan keseimbangan komputasi vs fleksibilitas
+
+  # ── State Weight Matrix Q [x, y, psi, u, r] ─────────────────────────────
+  # Makna: seberapa penting tracking masing-masing state
+  # x, y    : tracking posisi (penting untuk CTE kecil)
+  # psi     : tracking heading
+  # u       : tracking kecepatan surge
+  # r       : damping yaw rate (mencegah belok terlalu tajam → roll naik)
+  Q:  [8.0, 8.0, 3.0, 5.0, 0.5]
+  #    x     y    psi   u    r
+
+  # ── Input Weight Matrix R [TX, TN] ──────────────────────────────────────
+  # Makna: penalti penggunaan aktuator
+  # TX kecil: bebas gunakan thrust surge
+  # TN lebih besar: hindari yaw command terlalu agresif (→ kurangi roll)
+  R:  [0.01, 2.0]
+  #    TX     TN
+
+  # ── Terminal Cost Matrix Qf [x, y, psi, u, r] ───────────────────────────
+  # Harus lebih besar dari Q untuk menjamin stabilitas (Qf > Q)
+  Qf: [15.0, 15.0, 6.0, 8.0, 1.0]
+
+  # ── Additional Weights ───────────────────────────────────────────────────
+  W_obs:  300.0   # Obstacle avoidance penalty (sangat besar → prioritas utama)
+  W_cte:   10.0   # Cross-track error penalty
+  W_du:     0.5  # Input smoothness (cegah perubahan TX/TN yang terlalu mendadak)
+
+  # ── Input Constraints ────────────────────────────────────────────────────
+  # HARUS KONSISTEN dengan params.yaml /usv/lims
+  TX_min:    0.0    # Tidak boleh mundur
+  TX_max:  200.0    # Sama dengan /usv/lims/TX
+  TN_min: -800.0   # Sama dengan /usv/lims/TN
+  TN_max:  800.0
+  dTX_max:  100.0   # Rate limiter TX [N/s]
+  dTN_max: 2000.0   # Rate limiter TN [N/s]
+
+  # ── State Constraints ────────────────────────────────────────────────────
+  u_min:      0.3   # Tidak boleh mundur
+  u_max:      1.8   # Sedikit di atas target normal (1.5)
+  r_max_deg: 15.0   # Max yaw rate [deg/s] — KRITIS untuk kurangi roll!
+                    # Lebih kecil → roll lebih kecil saat belok
+
+  # ── Obstacle Safety Parameters ───────────────────────────────────────────
+  # d_safe: jarak minimum yang dibolehkan dari tepi obstacle
+  # (obstacle_radius + d_safe) = radius lingkaran terlarang
+  d_safe:  1.5   # [m] clearance dari tepi obstacle
+                 # obs_radius=0.25 → total exclusion = 1.75m
+
+  # d_warn: jarak dari tepi obstacle saat LMPC mulai aktif
+  d_warn:  3.5   # [m] LMPC aktif jika dist_to_edge < d_warn
+
+  # d_exit: jarak dari tepi obstacle saat LMPC dimatikan
+  d_exit:  5.0   # [m] LMPC off jika dist_to_edge > d_exit
+                 # d_exit > d_warn → hysteresis (mencegah chattering on/off)
+
+  # ── Speed Reduction Parameters ───────────────────────────────────────────
+  u_slow:   1.5   #disamakan aja karna ini minimu waktu tempuh
+  u_normal: 1.5   # [m/s] kecepatan normal (sama dengan U0_target)
+
+  # ── USV Model Parameters (diambil otomatis dari /usv) ────────────────────
+  # Nilai default jika tidak ditemukan di /usv
+  # A2, A12, A16, A18, A19 dari identifikasi Taylor 4-DOF
+  A2:   -0.7405
+  A12:  -1.0495
+  A16:   0.9671
+  A18:   0.0178
+  A19:   0.0010
+
+# ── Dynamic Obstacles ─────────────────────────────────────────────────────
+# Definisi obstacle untuk simulasi
+# Digunakan oleh path_planning.py untuk inisialisasi DYN_OBS
+dynamic_obstacles:
+  - id: 1
+    x0:    15.0
+    y0:     5.0
+    r:      0.25
+    vx:    -0.30   
+    vy:     0.80
+
+  - id: 2
+    x0:    37.0
+    y0:    22.0
+    r:      0.25
+    vx:    -0.10
+    vy:    -0.10
