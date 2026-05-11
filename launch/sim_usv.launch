@@ -1,0 +1,13 @@
+<launch>
+    <!-- 1. Muat parameter dari file YAML ke ROS Parameter Server -->
+    <rosparam file="$(find my_usv_pkg)/config/params.yaml" command="load" />
+
+    <!-- 2. Jalankan Node Utama (Path Planning, Controller & Dynamics) -->
+    <node pkg="my_usv_pkg" type="path_planning.py" name="usv_core_node" output="screen" />
+
+    <!-- 3. Jalankan Node RViz Visualizer -->
+    <node pkg="my_usv_pkg" type="rviz_visualizer.py" name="rviz_visualizer_node" output="screen" />
+
+    <!-- 4. Jalankan aplikasi RViz bawaan ROS -->
+    <node pkg="rviz" type="rviz" name="rviz" args="-d $(find my_usv_pkg)/rviz/usv.rviz" />
+</launch>
