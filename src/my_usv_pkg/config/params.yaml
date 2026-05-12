@@ -136,12 +136,11 @@ ctrl:
 
 lmpc:
   # ── Sampling & Horizon ───────────────────────────────────────────────────
-  dt:  0.05    # [s] SAMA dengan controller utama (jangan ubah)
-  N:   15      # Prediction horizon: 15 × 0.05s = 0.75s ke depan
-               # Cukup untuk deteksi & hindari obstacle bergerak lambat
-               # Terlalu besar: komputasi lambat; Terlalu kecil: reaksi terlambat
-  Nc:  8       # Control horizon: 8 ≤ N=15
-               # Nc=8 memberikan keseimbangan komputasi vs fleksibilitas
+  dt:  0.05    # [s] SAMA dengan controller utama
+  dt_mpc : 0.4
+  N:   10      # Prediction horizon: 10 × 0.4s = 4s ke depan
+               # Horizon lebih pendek → arc deviasi lebih kecil (CTE max ~3m bukan 14m)
+  Nc:  6       # Control horizon: 6 ≤ N=10
 
   # ── State Weight Matrix Q [x, y, psi, u, r] ─────────────────────────────
   # Makna: seberapa penting tracking masing-masing state
@@ -149,7 +148,7 @@ lmpc:
   # psi     : tracking heading
   # u       : tracking kecepatan surge
   # r       : damping yaw rate (mencegah belok terlalu tajam → roll naik)
-  Q:  [8.0, 8.0, 3.0, 5.0, 0.5]
+  Q:  [8.0, 10.0, 5.0, 10.0, 0.5]
   #    x     y    psi   u    r
 
   # ── Input Weight Matrix R [TX, TN] ──────────────────────────────────────
@@ -161,7 +160,7 @@ lmpc:
 
   # ── Terminal Cost Matrix Qf [x, y, psi, u, r] ───────────────────────────
   # Harus lebih besar dari Q untuk menjamin stabilitas (Qf > Q)
-  Qf: [15.0, 15.0, 6.0, 8.0, 1.0]
+  Qf: [15.0, 15.0, 6.0, 15.0, 1.0]
 
   # ── Additional Weights ───────────────────────────────────────────────────
   W_obs:  300.0   # Obstacle avoidance penalty (sangat besar → prioritas utama)
@@ -178,10 +177,10 @@ lmpc:
   dTN_max: 2000.0   # Rate limiter TN [N/s]
 
   # ── State Constraints ────────────────────────────────────────────────────
-  u_min:      0.3   # Tidak boleh mundur
+  u_min:      0.8   # Tidak boleh mundur
   u_max:      1.8   # Sedikit di atas target normal (1.5)
-  r_max_deg: 15.0   # Max yaw rate [deg/s] — KRITIS untuk kurangi roll!
-                    # Lebih kecil → roll lebih kecil saat belok
+  r_max_deg: 10.0   # Max yaw rate [deg/s] — dibatasi agar sway tidak meledak
+                    # Analisis: TN_solver=500 Nm hanya bisa stop r≤10 deg/s per step
 
   # ── Obstacle Safety Parameters ───────────────────────────────────────────
   # d_safe: jarak minimum yang dibolehkan dari tepi obstacle
