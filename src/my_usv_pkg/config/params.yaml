@@ -135,6 +135,8 @@ ctrl:
 # ================================================================
 
 lmpc:
+  enabled: true   # true=aktif, false=nonaktif (hanya GLOBAL RRT*+ILOS)
+
   # ── Sampling & Horizon ───────────────────────────────────────────────────
   dt:  0.05    # [s] SAMA dengan controller utama
   dt_mpc : 0.3
@@ -185,16 +187,16 @@ lmpc:
   # ── Obstacle Safety Parameters ───────────────────────────────────────────
   # d_safe: jarak minimum yang dibolehkan dari tepi obstacle
   # (obstacle_radius + d_safe) = radius lingkaran terlarang
-  d_safe:  1.0   # [m] clearance dari tepi obstacle
-                 # obs_radius=0.25 → total exclusion = 1.75m
+  d_safe:  1.2   # [m] clearance dari tepi obstacle
+                 # obs_radius=0.25 → total exclusion = .75m
 
   # d_warn: jarak dari tepi obstacle saat LMPC mulai aktif
-  d_warn:  2.5  # [m] LMPC aktif jika dist_to_edge < d_warn
+  d_warn:  3.5  # [m] LMPC aktif jika dist_to_edge < d_warn
 
   # d_exit: jarak dari tepi obstacle saat LMPC dimatikan
-  d_exit:  4.0   # [m] LMPC off jika dist_to_edge > d_exit
+  d_exit:  2.5   # [m] LMPC off jika dist_to_edge > d_exit
                  # d_exit > d_warn → hysteresis (mencegah chattering on/off)
-  d_gate: 5.5   # Diperbesar: agar obs2 terdeteksi via TCPA check saat USV masih cukup jauh
+  d_gate: 5.0   # Diperbesar: agar obs2 terdeteksi via TCPA check saat USV masih cukup jauh
   # ── Speed Reduction Parameters ───────────────────────────────────────────
   u_slow:   1.5   #disamakan aja karna ini minimu waktu tempuh
   u_normal: 1.5   # [m/s] kecepatan normal (sama dengan U0_target)
@@ -216,10 +218,10 @@ dynamic_obstacles:
     y0: 5.5
     r:  0.25
     vx: 0.00
-    vy: 0.60
+    vy: 0.62
 
-  - x0: 28.5
-    y0: 28.0
-    r:  0.25
-    vx: 0.00
-    vy: -0.25
+  #- x0: 28.5
+  # y0: 28.0
+  #  r:  0.25
+  #  vx: 0.00
+  #  vy: -0.27

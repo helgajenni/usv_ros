@@ -8,6 +8,9 @@
     <!-- 3. Jalankan Node RViz Visualizer -->
     <node pkg="my_usv_pkg" type="rviz_visualizer.py" name="rviz_visualizer_node" output="screen" />
 
-    <!-- 4. Jalankan aplikasi RViz bawaan ROS -->
-    <node pkg="rviz" type="rviz" name="rviz" args="-d $(find my_usv_pkg)/rviz/usv.rviz" />
+    <!-- 4. RViz overview: tampilan peta penuh dari atas (tetap seperti biasa) -->
+    <node pkg="rviz" type="rviz" name="rviz_overview" args="-d $(find my_usv_pkg)/rviz/usv.rviz" />
+
+    <!-- 5. RViz follow-cam: tampilan mengikuti USV (Fixed Frame = usv_base_link) -->
+    <node pkg="rviz" type="rviz" name="rviz_follow" args="-d $(find my_usv_pkg)/rviz/usv_follow.rviz" />
 </launch>

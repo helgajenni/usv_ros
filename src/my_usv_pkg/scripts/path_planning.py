@@ -374,7 +374,6 @@ def main_ros_loop():
     rospy.init_node('usv_core_node', anonymous=False)
     pub_pose      = rospy.Publisher('/usv/pose',              Pose2D,      queue_size=10)
     pub_path      = rospy.Publisher('/usv/planned_path',      Path,        queue_size=1, latch=True)
-    pub_raw       = rospy.Publisher('/usv/raw_path',          Path,        queue_size=1, latch=True)
     pub_dyn_obs   = rospy.Publisher('/usv/dynamic_obstacles', MarkerArray, queue_size=1)
     pub_local_ref = rospy.Publisher('/usv/local_ref_path',    Path,        queue_size=1)
     pub_local_opt = rospy.Publisher('/usv/local_opt_path',    Path,        queue_size=1)
@@ -441,7 +440,6 @@ def main_ros_loop():
         return msg
 
     pub_path.publish(_make_path_msg(full_path))
-    pub_raw.publish(_make_path_msg(raw_path_all))
 
     # ── Inisialisasi ─────────────────────────────────────────────────────
     dynamics = USVDynamics()
@@ -585,16 +583,21 @@ def main_ros_loop():
         else:
             target_U0 = U0_target
 
+
         # ════════════════════════════════════════════════════════════════
         #  CONTROL — LMPC + ILOS
         # ════════════════════════════════════════════════════════════════
 
         # ── LANGKAH 1: Cek obstacle DULU sebelum compute_control ─────────
         obs_now = get_obstacle_states(DYN_OBS, t)
+        if 9.0 < t < 13.0:
+            for i, o in enumerate(obs_now):
+                dist = math.hypot(x - o[0], y - o[1]) - o[2]
+                print(f"[DIST_DBG] t={t:.2f} USV=({x:.2f},{y:.2f}) DO{i+1}=({o[0]:.2f},{o[1]:.2f}) dist_edge={dist:.3f}", file=sys.stderr)
         obs_status, min_dist_obs = lmpc.check_obstacles(state, obs_now)
 
         lmpc_should_activate = (
-            t > 4.0
+             t > 4.0
             and dist_goal > float(ctrl_cfg.get('GOAL_TOL', 1.5)) * 2
             and (
                 obs_status in ['WARN', 'CRITICAL']
@@ -657,29 +660,43 @@ def main_ros_loop():
                             f"obs_dist={min_dist_obs:.2f}m")
 
         # ── LANGKAH 3: Set heading ILOS dari LMPC optimal ────────────────
-        # Saat LMPC aktif: psi_d_filtered ← psi_lmpc (LMPC steering ILOS)
-        # filter internal ILOS (+= 0.1*(psi_d_raw - psi_d_filtered)) akan menjaga
-        # transisi halus: 90% psi_lmpc + 10% natural ILOS heading
         if psi_lmpc is not None:
-            controller.psi_d_filtered = float(psi_lmpc)
             if lmpc_mode == 'LMPC_AVOID':
-                # Neutralize D-term selama manuver HINDARI:
-                # Saat USV belok (r tumbuh), filt_r ikut tumbuh → D-term = -Kpsi_d*filt_r
-                # menjadi besar negatif → TN turun atau balik negatif → USV berhenti belok!
-                # Dengan reset filt_r=0 setiap step: TN = Kpsi_p*psi_e + Kpsi_i*eInt
-                # → selalu positif (P+I only) → USV belok utara konsisten sampai obs lewat.
+                # AVOID: TN langsung dari solver LMPC (Langkah 5).
+                # ILOS dinetralkan agar tidak fight dengan TN_lmpc dan tidak
+                # menumpuk integral ke heading yang akan di-override.
+                controller.psi_d_filtered = float(state[2])
                 controller.filt_r = 0.0
+            else:
+                # RETURN: ILOS diarahkan oleh psi_lmpc untuk kembali ke jalur.
+                _psi_path = math.atan2(
+                    float(wp_next[1]) - float(wp_prev[1]),
+                    float(wp_next[0]) - float(wp_prev[0]))
+                _psi_now = float(state[2])
+                _delta = (_psi_path - _psi_now + math.pi) % (2*math.pi) - math.pi
+                # Clamp max 20 deg dari heading sekarang agar tidak spike
+                _psi_target = _psi_now + float(np.clip(_delta, -math.radians(20), math.radians(20)))
+                controller.psi_d_filtered = _psi_target
+                controller.filt_r = float(state[6]) * 0.3 
 
         # ── LANGKAH 4: ILOS compute_control (SELALU dipanggil sekali) ────
-        # TN yang dihasilkan selalu smooth (rate-limited dTN, anti-windup PID)
-        # Heading referensi sudah di-steer oleh LMPC atau ILOS natural
         Tcmd, cte, psi_e, psi_d = controller.compute_control(
             state, wp_prev, wp_next, dt, t, dist_goal, target_U0,
             lmpc_mode=current_mode)
 
-        # ── LANGKAH 5: Override TX dari LMPC (speed), TN tetap dari ILOS ─
+        # ── LANGKAH 5: Override TX dan TN dari LMPC ──────────────────────
         if TX_lmpc is not None:
-            Tcmd[0]      = float(np.clip(TX_lmpc, lmpc.TX_min, lmpc._TX_SOLVER_MAX))
+            Tcmd[0] = float(np.clip(TX_lmpc, lmpc.TX_min, lmpc._TX_SOLVER_MAX))
+            if lmpc_mode == 'LMPC_AVOID':
+                Tcmd[2] = float(np.clip(Tcmd_lmpc[2], lmpc.TN_min, lmpc.TN_max))
+                controller.TN_prev = Tcmd[2]   
+                controller.filt_r  = 0.0  
+                import sys
+                print(f"[TN_DBG] TN_lmpc={Tcmd_lmpc[2]:.1f} TN_final={Tcmd[2]:.1f}", file=sys.stderr)
+            elif lmpc_mode == 'LMPC_RETURN':
+                controller.TN_prev = 0.0
+                controller.filt_r  = 0.0
+                controller.eInt_psi *= 0.1
             current_mode = lmpc_mode
         else:
             prev_mode    = current_mode
@@ -696,6 +713,7 @@ def main_ros_loop():
                 # D-term = -Kpsi_d × filt_r = -2000×(-0.2) = +400 Nm spike →
                 # USV belok kiri berlebih → CTE osilasi. Dengan reset ke 0, spike hilang.
                 controller.filt_r = 0.0
+                controller.beta_hat = 0.0
                 # Opsi C: reset ke arah jalur global tapi dibatasi max 15 deg dari psi saat ini
                 # → tidak ada P-term spike, tapi langsung mengarah ke jalur bukan ke heading menyimpang
                 _psi_path = math.atan2(
@@ -703,7 +721,7 @@ def main_ros_loop():
                     float(wp_next[0]) - float(wp_prev[0]))
                 _psi_now  = float(state[2])
                 _delta    = (_psi_path - _psi_now + math.pi) % (2*math.pi) - math.pi
-                _psi_reset = _psi_now + float(np.clip(_delta, -math.radians(15), math.radians(15)))
+                _psi_reset = _psi_now + float(np.clip(_delta, -math.radians(25), math.radians(25)))
                 controller.psi_d_filtered = _psi_reset
                 mode_log_list.append((t, 'GLOBAL', min_dist_obs))
                 rospy.loginfo(
@@ -712,13 +730,18 @@ def main_ros_loop():
         # ── DYNAMICS STEP ────────────────────────────────────────────────
         dynamics.step(Tcmd, dt)
 
-        # ── SURGE HARD CLAMP ─────────────────────────────────────────────
+        # ── SURGE HARD CLAMP ─────────────────────────────────────
         U_MAX_HARD = 1.5
         if dynamics.state[4] > U_MAX_HARD:
             dynamics.state[4] = U_MAX_HARD
 
+        # ── YAW RATE CLAMP saat AVOID ────────────────────────────
+        if current_mode == 'LMPC_AVOID':
+            R_MAX_AVOID = 0.08  # rad/s ≈ 8.6°/s — cukup untuk belok tapi tidak loop
+            if abs(dynamics.state[6]) > R_MAX_AVOID:
+                dynamics.state[6] = math.copysign(R_MAX_AVOID, dynamics.state[6])
         # ── LOGGING ──────────────────────────────────────────────────────
-        if 30.0 <= t <= 40.0: rospy.loginfo(f"[POS] t={t:.1f}s x={x:.2f} y={y:.2f}")
+        if t >= 5.0: rospy.loginfo(f"[POS] t={t:.1f}s x={x:.2f} y={y:.2f} mode={current_mode}")
         log_data.append([
             t,
             math.degrees(psi),
